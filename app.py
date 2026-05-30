@@ -371,9 +371,31 @@ def delete_record_file(record: CleanRecord) -> None:
         target.unlink()
 
 
+def load_codex_thread_names() -> dict[str, str]:
+    path = codex_index_path()
+    if not path.exists():
+        return {}
+    names = {}
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                thread_id = item.get("id")
+                thread_name = item.get("thread_name")
+                if isinstance(thread_id, str) and isinstance(thread_name, str) and thread_name.strip():
+                    names[thread_id] = thread_name.strip()
+    except OSError:
+        pass
+    return names
+
+
 def load_codex_records() -> list[CleanRecord]:
     if not codex_db_path().exists():
         return []
+    thread_names = load_codex_thread_names()
     con = sqlite3.connect(f"file:{codex_db_path()}?mode=ro", uri=True)
     try:
         rows = con.execute(
@@ -392,7 +414,7 @@ def load_codex_records() -> list[CleanRecord]:
             CleanRecord(
                 provider=PROVIDER_CODEX,
                 record_id=thread_id,
-                title=title or tr("untitled"),
+                title=thread_names.get(thread_id) or title or tr("untitled"),
                 path=rollout_path or "",
                 updated_at=float(updated_at or 0),
                 cwd=cwd or "",
