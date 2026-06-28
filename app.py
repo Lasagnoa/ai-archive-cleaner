@@ -327,8 +327,20 @@ def claude_desktop_code_sessions_path() -> Path:
     return appdata_roaming() / "Claude" / "claude-code-sessions"
 
 
+def strip_windows_extended_prefix(value: str) -> str:
+    if os.name != "nt":
+        return value
+    if value.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + value[8:]
+    if value.startswith("\\\\?\\"):
+        return value[4:]
+    return value
+
+
 def safe_resolve(path: Path) -> Path:
-    return path.expanduser().resolve(strict=False)
+    expanded = path.expanduser()
+    normalized = Path(strip_windows_extended_prefix(str(expanded)))
+    return normalized.resolve(strict=False)
 
 
 def is_relative_to(child: Path, parent: Path) -> bool:
@@ -649,9 +661,7 @@ def delete_codex_log_rows(ids: set[str]) -> None:
 def normalize_codex_workspace_path(value: str) -> str:
     if not value:
         return ""
-    text = value.strip()
-    if text.startswith("\\\\?\\"):
-        text = text[4:]
+    text = strip_windows_extended_prefix(value.strip())
     try:
         text = str(safe_resolve(Path(text)))
     except Exception:
@@ -662,12 +672,7 @@ def normalize_codex_workspace_path(value: str) -> str:
 def display_path_text(value: str) -> str:
     if not value:
         return ""
-    text = value.strip()
-    if text.startswith("\\\\?\\UNC\\"):
-        return "\\\\" + text[8:]
-    if text.startswith("\\\\?\\"):
-        return text[4:]
-    return text
+    return strip_windows_extended_prefix(value.strip())
 
 
 def remaining_codex_workspace_paths() -> set[str]:
