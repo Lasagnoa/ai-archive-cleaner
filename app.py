@@ -249,11 +249,49 @@ def process_running(image_name: str) -> bool:
     return image_name.lower() in result.stdout.lower()
 
 
-def stop_processes(image_names: list[str]) -> None:
+def codex_desktop_process_ids() -> list[str]:
+    """Return only the ChatGPT.exe processes belonging to the Codex MSIX package."""
+    if os.name != "nt":
+        return []
+    command = [
+        "powershell",
+        "-NoProfile",
+        "-Command",
+        (
+            "Get-CimInstance Win32_Process | Where-Object { "
+            "$_.Name -ieq 'ChatGPT.exe' -and "
+            "$_.ExecutablePath -like '*\\OpenAI.Codex_*\\app\\ChatGPT.exe' -and "
+            "$_.CommandLine -notmatch '\\s--type=' "
+            "} | ForEach-Object { $_.ProcessId }"
+        ),
+    ]
+    try:
+        result = run_hidden(command)
+    except Exception:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip().isdigit()]
+
+
+def process_id_running(process_id: str) -> bool:
+    try:
+        result = run_hidden(["tasklist", "/FI", f"PID eq {process_id}", "/NH"])
+    except Exception:
+        return False
+    return process_id in result.stdout
+
+
+def stop_processes(image_names: list[str], process_ids: list[str] | None = None) -> None:
+    # Codex Desktop is now hosted by ChatGPT.exe.  Killing only its bundled
+    # codex.exe sidecar leaves the Electron shell alive and it can restart the
+    # sidecar, so terminate the package's root process tree first.
+    for process_id in process_ids or []:
+        run_hidden(["taskkill", "/PID", process_id, "/T", "/F"])
     for image_name in image_names:
         run_hidden(["taskkill", "/IM", image_name, "/T", "/F"])
     for _ in range(25):
-        if not any(process_running(name) for name in image_names):
+        images_stopped = not any(process_running(name) for name in image_names)
+        pids_stopped = not any(process_id_running(process_id) for process_id in process_ids or [])
+        if images_stopped and pids_stopped:
             return
         time.sleep(0.2)
     raise RuntimeError(tr("stop_process_failed"))
@@ -323,8 +361,28 @@ def claude_json_path() -> Path:
     return home() / ".claude.json"
 
 
-def claude_desktop_code_sessions_path() -> Path:
-    return appdata_roaming() / "Claude" / "claude-code-sessions"
+def claude_desktop_data_paths() -> list[Path]:
+    """Return both legacy and MSIX Claude Desktop data roots."""
+    roots = [appdata_roaming() / "Claude"]
+    packages = appdata_local() / "Packages"
+    if packages.exists():
+        try:
+            roots.extend(path / "LocalCache" / "Roaming" / "Claude" for path in packages.glob("Claude_*"))
+        except OSError:
+            pass
+
+    unique = []
+    seen = set()
+    for root in roots:
+        normalized = str(safe_resolve(root))
+        if normalized not in seen:
+            seen.add(normalized)
+            unique.append(root)
+    return unique
+
+
+def claude_desktop_code_sessions_paths() -> list[Path]:
+    return [root / "claude-code-sessions" for root in claude_desktop_data_paths()]
 
 
 def strip_windows_extended_prefix(value: str) -> str:
@@ -494,22 +552,21 @@ def decode_claude_project_name(name: str) -> str:
 
 
 def load_claude_desktop_titles() -> dict[str, str]:
-    root = claude_desktop_code_sessions_path()
-    if not root.exists():
-        return {}
-
     titles = {}
-    for path in root.rglob("*.json"):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-        except Exception:
+    for root in claude_desktop_code_sessions_paths():
+        if not root.exists():
             continue
-        if not isinstance(data, dict):
-            continue
-        cli_session_id = data.get("cliSessionId")
-        title = data.get("title")
-        if isinstance(cli_session_id, str) and isinstance(title, str) and title.strip():
-            titles[cli_session_id] = title.strip()
+        for path in root.rglob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            cli_session_id = data.get("cliSessionId")
+            title = data.get("title")
+            if isinstance(cli_session_id, str) and isinstance(title, str) and title.strip():
+                titles[cli_session_id] = title.strip()
     return titles
 
 
@@ -532,505 +589,7 @@ def load_claude_records() -> list[CleanRecord]:
                 record_id=session_id,
                 title=title,
                 path=str(path),
-                updated_at=stat.st_mtime,
-                cwd=cwd or decode_claude_project_name(path.parent.name),
-                status=tr("jsonl_history"),
-            )
-        )
-    records.sort(key=lambda item: item.updated_at, reverse=True)
-    return records
-
-
-def load_codex_document_records() -> list[CleanRecord]:
-    root = codex_documents_path()
-    if not root.exists():
-        return []
-    records = []
-    for path in root.iterdir():
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        records.append(
-            CleanRecord(
-                provider=PROVIDER_CODEX_DOCS,
-                record_id=path.name,
-                title=f"Documents\\Codex\\{path.name}",
-                path=str(path),
-                updated_at=stat.st_mtime,
-                cwd=str(root),
-                status=tr("artifact"),
-            )
-        )
-    records.sort(key=lambda item: item.updated_at, reverse=True)
-    return records
-
-
-def load_records() -> list[CleanRecord]:
-    records = load_codex_records()
-    records.extend(load_claude_records())
-    records.extend(load_codex_document_records())
-    records.sort(key=lambda item: item.updated_at, reverse=True)
-    return records
-
-
-def remove_jsonl_lines_by_field(path: Path, field: str, ids: set[str]) -> None:
-    if not ids or not path.exists():
-        return
-    kept_lines = []
-    with path.open("r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                kept_lines.append(line)
-                continue
-            if item.get(field) not in ids:
-                kept_lines.append(line)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text("".join(kept_lines), encoding="utf-8")
-    temp_path.replace(path)
-
-
-def delete_sql_rows(db_path: Path, statements: list[tuple[str, list[str]]]) -> None:
-    if not db_path.exists() or not statements:
-        return
-    con = sqlite3.connect(db_path)
-    try:
-        cur = con.cursor()
-        existing_tables = {
-            row[0] for row in cur.execute("select name from sqlite_master where type='table'")
-        }
-        cur.execute("begin")
-        for sql, params in statements:
-            table_name = sql.split()[2]
-            if table_name in existing_tables:
-                cur.execute(sql, params)
-        con.commit()
-    except Exception:
-        con.rollback()
-        raise
-    finally:
-        con.close()
-
-
-def delete_codex_db_rows(ids: set[str]) -> None:
-    if not ids:
-        return
-    placeholders = ",".join("?" for _ in ids)
-    params = list(ids)
-    statements = [
-        (f"delete from stage1_outputs where thread_id in ({placeholders})", params),
-        (f"delete from thread_dynamic_tools where thread_id in ({placeholders})", params),
-        (f"delete from thread_goals where thread_id in ({placeholders})", params),
-        (f"delete from agent_job_items where assigned_thread_id in ({placeholders})", params),
-        (
-            f"""
-            delete from thread_spawn_edges
-            where parent_thread_id in ({placeholders})
-               or child_thread_id in ({placeholders})
-            """,
-            params + params,
-        ),
-        (f"delete from threads where id in ({placeholders})", params),
-    ]
-    delete_sql_rows(codex_db_path(), statements)
-
-
-def delete_codex_log_rows(ids: set[str]) -> None:
-    if not ids or not codex_logs_db_path().exists():
-        return
-    placeholders = ",".join("?" for _ in ids)
-    con = sqlite3.connect(codex_logs_db_path())
-    try:
-        cur = con.cursor()
-        existing_tables = {
-            row[0] for row in cur.execute("select name from sqlite_master where type='table'")
-        }
-        cur.execute("begin")
-        if "logs" in existing_tables:
-            cur.execute(f"delete from logs where thread_id in ({placeholders})", list(ids))
-        con.commit()
-    except Exception:
-        con.rollback()
-        raise
-    finally:
-        con.close()
-
-
-def normalize_codex_workspace_path(value: str) -> str:
-    if not value:
-        return ""
-    text = strip_windows_extended_prefix(value.strip())
-    try:
-        text = str(safe_resolve(Path(text)))
-    except Exception:
-        pass
-    return os.path.normcase(os.path.normpath(text))
-
-
-def display_path_text(value: str) -> str:
-    if not value:
-        return ""
-    return strip_windows_extended_prefix(value.strip())
-
-
-def remaining_codex_workspace_paths() -> set[str]:
-    if not codex_db_path().exists():
-        return set()
-    con = sqlite3.connect(f"file:{codex_db_path()}?mode=ro", uri=True)
-    try:
-        rows = con.execute("select distinct cwd from threads").fetchall()
-    finally:
-        con.close()
-    return {normalized for (cwd,) in rows if (normalized := normalize_codex_workspace_path(cwd or ""))}
-
-
-def prune_codex_global_project_state(deleted_cwds: set[str]) -> None:
-    path = codex_global_state_path()
-    if not deleted_cwds or not path.exists():
-        return
-
-    remaining_cwds = remaining_codex_workspace_paths()
-    stale_cwds = {
-        normalized
-        for cwd in deleted_cwds
-        if (normalized := normalize_codex_workspace_path(cwd)) and normalized not in remaining_cwds
-    }
-    if not stale_cwds:
-        return
-
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return
-    if not isinstance(data, dict):
-        return
-
-    changed = False
-    for key in ["electron-saved-workspace-roots", "project-order", "active-workspace-roots"]:
-        values = data.get(key)
-        if not isinstance(values, list):
-            continue
-        filtered = [
-            value
-            for value in values
-            if not (isinstance(value, str) and normalize_codex_workspace_path(value) in stale_cwds)
-        ]
-        if len(filtered) != len(values):
-            data[key] = filtered
-            changed = True
-
-    if not changed:
-        return
-
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    temp_path.replace(path)
-
-
-def update_claude_json_last_sessions(session_ids: set[str]) -> None:
-    path = claude_json_path()
-    if not session_ids or not path.exists():
-        return
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return
-    changed = False
-    for project in data.get("projects", {}).values():
-        if isinstance(project, dict) and project.get("lastSessionId") in session_ids:
-            project.pop("lastSessionId", None)
-            project.pop("lastSessionMetrics", None)
-            changed = True
-    if changed:
-        temp_path = path.with_suffix(path.suffix + ".tmp")
-        temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp_path.replace(path)
-
-
-def delete_claude_desktop_code_session_files(session_ids: set[str]) -> list[str]:
-    if not session_ids:
-        return []
-
-    root = claude_desktop_code_sessions_path()
-    if not root.exists():
-        return []
-
-    root = safe_resolve(root)
-    errors = []
-    for path in root.rglob("*.json"):
-        try:
-            resolved = safe_resolve(path)
-            if not is_relative_to(resolved, root):
-                raise ValueError(tr("outside_allowed_path", path=resolved))
-            data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-            if not isinstance(data, dict):
-                continue
-            if data.get("cliSessionId") in session_ids:
-                path.unlink()
-        except Exception as exc:
-            errors.append(f"{path}: {exc}")
-    cleanup_empty_dirs(root)
-    return errors
-
-
-def cleanup_empty_dirs(root: Path) -> None:
-    if not root.exists() or not root.is_dir():
-        return
-    root = safe_resolve(root)
-    for path in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
-        try:
-            resolved = safe_resolve(path)
-            if resolved != root and is_relative_to(resolved, root) and path.is_dir():
-                path.rmdir()
-        except OSError:
-            pass
-
-
-def delete_selected_records(records: list[CleanRecord]) -> tuple[int, list[str]]:
-    errors = []
-    deleted = []
-    for record in records:
-        try:
-            delete_record_file(record)
-            deleted.append(record)
-        except Exception as exc:
-            errors.append(f"{record.title}: {exc}")
-
-    codex_ids = {record.record_id for record in deleted if record.provider == PROVIDER_CODEX}
-    codex_cwds = {record.cwd for record in deleted if record.provider == PROVIDER_CODEX and record.cwd}
-    claude_ids = {record.record_id for record in deleted if record.provider == PROVIDER_CLAUDE}
-    delete_codex_db_rows(codex_ids)
-    delete_codex_log_rows(codex_ids)
-    remove_jsonl_lines_by_field(codex_index_path(), "id", codex_ids)
-    remove_jsonl_lines_by_field(codex_history_path(), "session_id", codex_ids)
-    prune_codex_global_project_state(codex_cwds)
-    remove_jsonl_lines_by_field(claude_history_path(), "sessionId", claude_ids)
-    update_claude_json_last_sessions(claude_ids)
-    errors.extend(delete_claude_desktop_code_session_files(claude_ids))
-
-    for root in [
-        codex_sessions_path(),
-        codex_archived_sessions_path(),
-        codex_documents_path(),
-        claude_projects_path(),
-    ]:
-        cleanup_empty_dirs(root)
-    return len(deleted), errors
-
-
-def delete_dir_contents(path: Path) -> None:
-    if not path.exists() or not path.is_dir():
-        return
-    for child in path.iterdir():
-        if child.is_dir():
-            shutil.rmtree(child)
-        else:
-            child.unlink()
-
-
-def truncate_file(path: Path) -> None:
-    if path.exists() and path.is_file():
-        path.write_text("", encoding="utf-8")
-
-
-def clean_codex_logs_db_all() -> None:
-    path = codex_logs_db_path()
-    if not path.exists():
-        return
-    con = sqlite3.connect(path)
-    try:
-        cur = con.cursor()
-        tables = {row[0] for row in cur.execute("select name from sqlite_master where type='table'")}
-        cur.execute("begin")
-        if "logs" in tables:
-            cur.execute("delete from logs")
-        con.commit()
-        cur.execute("pragma wal_checkpoint(TRUNCATE)")
-        cur.execute("vacuum")
-    except Exception:
-        con.rollback()
-        raise
-    finally:
-        con.close()
-
-
-def clean_claude_json_trace() -> None:
-    path = claude_json_path()
-    if not path.exists():
-        return
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return
-    changed = False
-    for key in ["skillUsage", "seenNotifications", "tipsHistory"]:
-        if key in data:
-            data[key] = {} if isinstance(data[key], dict) else []
-            changed = True
-    if changed:
-        temp_path = path.with_suffix(path.suffix + ".tmp")
-        temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp_path.replace(path)
-
-
-def protected_common_paths() -> list[Path]:
-    codex = codex_home()
-    claude = claude_home()
-    roaming_claude = appdata_roaming() / "Claude"
-    return [
-        codex / "auth.json",
-        codex / "config.toml",
-        codex / "state_5.sqlite",
-        codex / "state_5.sqlite-wal",
-        codex / "state_5.sqlite-shm",
-        codex / "session_index.jsonl",
-        codex / "history.jsonl",
-        codex / ".codex-global-state.json",
-        codex / ".codex-global-state.json.bak",
-        codex / "sessions",
-        codex / "archived_sessions",
-        codex / "plugins",
-        codex / "skills",
-        codex / "memories",
-        claude / "projects",
-        claude / "history.jsonl",
-        claude_json_path(),
-        home() / ".claude.json.backup",
-        roaming_claude / "config.json",
-        roaming_claude / "Preferences",
-        roaming_claude / "Local State",
-        roaming_claude / "IndexedDB",
-        roaming_claude / "Local Storage",
-        roaming_claude / "Network",
-        roaming_claude / "Partitions",
-        roaming_claude / "Session Storage",
-        roaming_claude / "WebStorage",
-        roaming_claude / "blob_storage",
-        roaming_claude / "local-agent-mode-sessions",
-        claude_desktop_code_sessions_path(),
-        roaming_claude / "claude-code-vm",
-        roaming_claude / "vm_bundles",
-        roaming_claude / "Claude Extensions",
-        roaming_claude / "Claude Extensions Settings",
-    ]
-
-
-def is_protected_common_path(path: Path) -> bool:
-    resolved = safe_resolve(path)
-    for protected in protected_common_paths():
-        protected_resolved = safe_resolve(protected)
-        if resolved == protected_resolved or is_relative_to(resolved, protected_resolved):
-            return True
-    return False
-
-
-def common_targets() -> list[CommonTarget]:
-    codex = codex_home()
-    claude = claude_home()
-    roaming_claude = appdata_roaming() / "Claude"
-    local = appdata_local()
-    targets = [
-        CommonTarget(tr("common_codex_logs_db"), codex / "logs_2.sqlite", "codex_logs_db"),
-        CommonTarget(tr("common_codex_tui_log"), codex / "log", "contents"),
-        CommonTarget(tr("common_codex_sandbox_log"), codex / "sandbox.log", "delete_file"),
-        CommonTarget(tr("common_codex_internal_sandbox_log"), codex / ".sandbox" / "sandbox.log", "delete_file"),
-        CommonTarget(tr("common_claude_session_env"), claude / "session-env", "contents"),
-        CommonTarget(tr("common_claude_shell_snapshots"), claude / "shell-snapshots", "contents"),
-        CommonTarget(tr("common_claude_cli_node_cache"), local / "claude-cli-nodejs" / "Cache", "contents"),
-        CommonTarget(tr("common_claude_native_host_logs"), local / "Claude" / "Logs", "contents"),
-    ]
-    for name in [
-        "Cache",
-        "Code Cache",
-        "Crashpad",
-        "DawnGraphiteCache",
-        "DawnWebGPUCache",
-        "GPUCache",
-        "sentry",
-        "Shared Dictionary",
-        "logs",
-    ]:
-        targets.append(CommonTarget(tr("common_claude_desktop", name=name), roaming_claude / name, "contents"))
-    return [target for target in targets if target.path.exists()]
-
-
-def clean_common_traces() -> tuple[int, list[str]]:
-    errors = []
-    cleaned = 0
-    allowed_roots = [
-        safe_resolve(codex_home()),
-        safe_resolve(claude_home()),
-        safe_resolve(appdata_roaming() / "Claude"),
-        safe_resolve(appdata_local() / "Claude"),
-        safe_resolve(appdata_local() / "claude-cli-nodejs"),
-    ]
-    allowed_files = {
-        safe_resolve(home() / ".claude.json"),
-        safe_resolve(home() / ".claude.json.backup"),
-    }
-    for target in common_targets():
-        try:
-            resolved = safe_resolve(target.path)
-            if resolved not in allowed_files and not any(
-                resolved == root or is_relative_to(resolved, root) for root in allowed_roots
-            ):
-                raise ValueError(tr("outside_allowed_path", path=resolved))
-            if is_protected_common_path(resolved):
-                raise ValueError(tr("protected_common_path", path=resolved))
-
-            if target.action == "contents":
-                delete_dir_contents(resolved)
-            elif target.action == "truncate":
-                truncate_file(resolved)
-            elif target.action == "delete_file":
-                if resolved.exists() and resolved.is_file():
-                    resolved.unlink()
-            elif target.action == "codex_logs_db":
-                clean_codex_logs_db_all()
-            elif target.action == "claude_json_trace":
-                clean_claude_json_trace()
-            else:
-                raise ValueError(tr("unsupported_action", action=target.action))
-            cleaned += 1
-        except Exception as exc:
-            errors.append(f"{target.name}: {exc}")
-    return cleaned, errors
-
-
-class App(tk.Tk):
-    def __init__(self) -> None:
-        super().__init__()
-        self.title(APP_NAME)
-        icon_path = app_dir() / "favicon.ico"
-        if icon_path.exists():
-            try:
-                self.iconbitmap(default=str(icon_path))
-            except tk.TclError:
-                pass
-        self.geometry("1148x716")
-        self.minsize(720, 420)
-
-        self.records: dict[str, CleanRecord] = {}
-        self.checked_keys: set[str] = set()
-        self.search_var = tk.StringVar(value="")
-        self.common_var = tk.BooleanVar(value=True)
-        self.status_var = tk.StringVar(value="")
-        self.sort_column = "updated"
-        self.sort_reverse = True
-        self.columns = ("checked", "provider", "title", "updated", "size", "status", "cwd", "path")
-        self.default_display_columns = ("checked", "provider", "title", "status", "updated", "size", "cwd", "path")
-        self.fixed_width_columns = {"checked", "provider", "updated"}
-        self.heading_press_column = ""
-        self.heading_dragging = False
-        self.heading_press_x = 0
-        self.heading_reorder_ready = False
-        self.heading_long_press_job = ""
-        self.heading_drop_index = 0
-        self.drop_indicator: tk.Frame | None = None
-
-        self._setup_theme()
+          …4386 tokens truncated…_setup_theme()
         self._build_ui()
         self.refresh()
 
@@ -1473,17 +1032,21 @@ class App(tk.Tk):
             messagebox.showinfo(APP_NAME, tr("select_to_delete"))
             return
 
+        codex_desktop_pids = codex_desktop_process_ids()
         running_images = [
-            name for name in ["Codex.exe", "codex.exe", "Claude.exe", "claude.exe"] if process_running(name)
+            name for name in ["codex.exe", "Claude.exe", "claude.exe"] if process_running(name)
         ]
-        if running_images:
+        running_apps = sorted(set(running_images))
+        if codex_desktop_pids:
+            running_apps.insert(0, "ChatGPT.exe (Codex)")
+        if running_apps:
             if not messagebox.askyesno(
                 APP_NAME,
-                tr("running_apps", apps=", ".join(sorted(set(running_images)))),
+                tr("running_apps", apps=", ".join(running_apps)),
             ):
                 return
             try:
-                stop_processes(sorted(set(running_images)))
+                stop_processes(sorted(set(running_images)), codex_desktop_pids)
             except Exception as exc:
                 messagebox.showerror(APP_NAME, str(exc))
                 self.refresh()
@@ -1534,3 +1097,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
