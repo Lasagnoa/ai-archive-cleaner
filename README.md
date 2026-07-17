@@ -37,13 +37,26 @@ AI Archive Cleaner は、Codex と Claude のローカルチャット履歴・�
   - `GPUCache`
   - `Shared Dictionary`
 
+「Claude/Codexの履歴・メタデータも全削除」を有効にすると、プライバシー掃除として以下も処理します。
+
+- Claude Code `projects` 配下の履歴・メモ・ツール結果
+- Claude の `history.jsonl` にある、削除前にJSONLから収集したセッションIDの行
+- Claude のプロジェクト別セッションメトリクス・直近プロンプト情報
+- Codex の会話DBデータ、ログ、`history.jsonl`、`session_index.jsonl`
+- Codex の `sessions` / `archived_sessions`、添付ファイル、生成画像、`Documents\Codex` の生成物
+- Codex のプロンプト履歴・スレッド説明・作業フォルダヒントなどの会話メタデータ
+- Codex Desktop のローカルプロジェクト一覧と選択状態
+
+この処理でも、ログイン情報と本体設定は削除しません。Claude の `.credentials.json`、`settings.json`、`.claude.json` の認証・MCP・権限設定、Codex の `auth.json`、`config.toml`、プラグイン、スキル、一般的なアプリ設定は保持します。Codex Desktop の表示用ローカルプロジェクト台帳だけは、履歴と一緒に整理します。
+
 ## 削除しないもの
 
 - Codex / Claude の認証情報
 - 主要設定ファイル
-- Codex の `state_5.sqlite`
-- Codex の `session_index.jsonl`
-- Codex の `history.jsonl`
+- Codex の認証情報 `auth.json`
+- Codex の本体設定 `config.toml`
+- Claude Code の認証情報 `.claude\.credentials.json`
+- Claude Code のユーザー設定 `settings.json`
 - プラグイン本体
 - スキル本体
 - Claude Desktop の `IndexedDB`
@@ -51,7 +64,7 @@ AI Archive Cleaner は、Codex と Claude のローカルチャット履歴・�
 - Claude Desktop の `Session Storage`
 - Claude Desktop の `WebStorage`
 - Claude Web のクラウド側チャット履歴
-- Claude Memory
+- Claude Memory（クラウド側）
 
 バックアップは作成しません。削除操作は自己責任で実行してください。
 

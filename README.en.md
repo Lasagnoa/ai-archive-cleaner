@@ -37,13 +37,19 @@ Optional shared cleanup:
   - `GPUCache`
   - `Shared Dictionary`
 
+Enable “Delete all Claude/Codex history and metadata” for a privacy cleanup. It removes Claude Code project history, memory/tool-result files, matching Claude `history.jsonl` session rows, session metrics and recent-prompt metadata, Codex conversation data/logs/indexes/session folders, Codex attachments/generated images, `Documents\Codex` artifacts, conversation metadata from Codex global state, and Codex Desktop's local project list/selection state.
+
+Authentication and application settings are preserved. This includes Claude `.credentials.json`, `settings.json`, authentication/MCP/permission settings in `.claude.json`, and Codex `auth.json`, `config.toml`, plugins, skills, and general app settings. Only the Codex Desktop local project registry is removed.
+
 ## What It Does Not Delete
 
 - Codex / Claude authentication data
 - Primary settings files
-- Codex `state_5.sqlite`
-- Codex `session_index.jsonl`
-- Codex `history.jsonl`
+- Codex `state_5.sqlite` and `session_index.jsonl` files themselves (privacy cleanup may clear their history data)
+- Codex `auth.json`
+- Codex `config.toml`
+- Claude Code `.claude\.credentials.json`
+- Claude Code `settings.json`
 - Plugin directories
 - Skill directories
 - Claude Desktop `IndexedDB`
@@ -51,7 +57,7 @@ Optional shared cleanup:
 - Claude Desktop `Session Storage`
 - Claude Desktop `WebStorage`
 - Claude Web cloud chat history
-- Claude Memory
+- Claude Memory (cloud)
 
 No backup is created. Run deletion operations at your own risk.
 

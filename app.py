@@ -43,6 +43,7 @@ STRINGS = {
         "check_all": "全チェック",
         "uncheck_all": "全解除",
         "delete_common": "共通ログ/キャッシュも一緒に消す",
+        "delete_privacy": "Claude/Codexの履歴・メタデータも全削除",
         "search": "検索",
         "kind": "種類",
         "title": "タイトル",
@@ -52,19 +53,22 @@ STRINGS = {
         "cwd": "作業フォルダ",
         "path": "保存場所",
         "load_failed": "読み込みに失敗しました。\n\n{error}",
-        "status_line": "{shown} 件を表示中 / チェック {checked} 件 / 共通ログ・キャッシュ {common} 箇所",
+        "status_line": "{shown} 件を表示中 / チェック {checked} 件 / 共通ログ・キャッシュ {common} 箇所 / プライバシー削除 {privacy} 箇所",
         "select_to_delete": "削除するチャット/生成物にチェックを入れてください。",
         "running_apps": "対象アプリが起動中です。\n書き込み競合を避けるため、終了してから削除します。\n\n終了対象: {apps}\n\n終了して続行しますか？",
         "more_items": "...ほか {count} 件",
         "delete_common_confirm": "\n共通ログ/キャッシュも一緒に削除します。",
+        "delete_privacy_confirm": "\nClaude/Codexの履歴・メタデータ・生成物を全削除します。Codex Desktopのローカルプロジェクト一覧も整理しますが、認証・CLI設定・アプリの一般設定は保持します。",
         "confirm_delete": "選択した {count} 件を完全削除します。{common_text}\nバックアップは作りません。\n\n{titles}\n\n続行しますか？",
-        "processed_warning": "チャット/生成物 {records} 件、共通痕跡 {common} 箇所を処理しました。\n一部に失敗があります。\n\n{errors}",
-        "processed_info": "チャット/生成物 {records} 件、共通痕跡 {common} 箇所を処理しました。",
+        "processed_warning": "チャット/生成物 {records} 件、共通痕跡 {common} 箇所、プライバシー削除 {privacy} 箇所を処理しました。\n一部に失敗があります。\n\n{errors}",
+        "processed_info": "チャット/生成物 {records} 件、共通痕跡 {common} 箇所、プライバシー削除 {privacy} 箇所を処理しました。",
         "stop_process_failed": "対象アプリを終了できませんでした。手動で終了してから再実行してください。",
         "empty_delete_path": "削除パスが空です",
         "refuse_root_delete": "保存場所のルート自体は削除しません: {path}",
         "outside_allowed_path": "許可された場所の外です: {path}",
         "protected_common_path": "設定・認証・履歴に関わるため共通削除では扱いません: {path}",
+        "sqlite_checkpoint_failed": "SQLiteのWALチェックポイントに失敗しました: {path}",
+        "privacy_remaining": "削除後も対象データが残っています: {name}",
         "unsupported_action": "未対応の処理です: {action}",
         "common_codex_logs_db": "Codex ログDB",
         "common_codex_tui_log": "Codex TUIログ",
@@ -75,6 +79,8 @@ STRINGS = {
         "common_claude_cli_node_cache": "Claude CLI Node.jsキャッシュ",
         "common_claude_native_host_logs": "Claude Native Hostログ",
         "common_claude_desktop": "Claude Desktop {name}",
+        "privacy_claude": "Claude 履歴・メタデータ",
+        "privacy_codex": "Codex 履歴・メタデータ・生成物",
         "windows_only": "このツールはWindows専用です。",
     },
     "en": {
@@ -93,6 +99,7 @@ STRINGS = {
         "check_all": "Check all",
         "uncheck_all": "Clear all",
         "delete_common": "Also delete shared logs/cache",
+        "delete_privacy": "Delete all Claude/Codex history and metadata",
         "search": "Search",
         "kind": "Type",
         "title": "Title",
@@ -102,19 +109,22 @@ STRINGS = {
         "cwd": "Working folder",
         "path": "Path",
         "load_failed": "Failed to load records.\n\n{error}",
-        "status_line": "{shown} shown / {checked} checked / {common} shared log/cache targets",
+        "status_line": "{shown} shown / {checked} checked / {common} shared log/cache targets / {privacy} privacy targets",
         "select_to_delete": "Check chats/artifacts to delete first.",
         "running_apps": "Target apps are running.\nThey will be closed before deletion to avoid write conflicts.\n\nApps to close: {apps}\n\nClose them and continue?",
         "more_items": "...and {count} more",
         "delete_common_confirm": "\nShared logs/cache will also be deleted.",
+        "delete_privacy_confirm": "\nAll Claude/Codex history, metadata, and artifacts will be deleted. Codex Desktop's local project list will also be cleaned, while authentication, CLI configuration, and general app settings are preserved.",
         "confirm_delete": "Permanently delete {count} selected item(s).{common_text}\nNo backup will be created.\n\n{titles}\n\nContinue?",
-        "processed_warning": "Processed {records} chat/artifact item(s) and {common} shared trace target(s).\nSome operations failed.\n\n{errors}",
-        "processed_info": "Processed {records} chat/artifact item(s) and {common} shared trace target(s).",
+        "processed_warning": "Processed {records} chat/artifact item(s), {common} shared trace target(s), and {privacy} privacy target(s).\nSome operations failed.\n\n{errors}",
+        "processed_info": "Processed {records} chat/artifact item(s), {common} shared trace target(s), and {privacy} privacy target(s).",
         "stop_process_failed": "Could not close the target apps. Close them manually and run again.",
         "empty_delete_path": "Delete path is empty",
         "refuse_root_delete": "Refusing to delete the storage root itself: {path}",
         "outside_allowed_path": "Path is outside the allowed locations: {path}",
         "protected_common_path": "Shared cleanup will not touch settings, auth, or history paths: {path}",
+        "sqlite_checkpoint_failed": "SQLite WAL checkpoint failed: {path}",
+        "privacy_remaining": "Privacy data remains after cleanup: {name}",
         "unsupported_action": "Unsupported action: {action}",
         "common_codex_logs_db": "Codex logs DB",
         "common_codex_tui_log": "Codex TUI logs",
@@ -125,6 +135,8 @@ STRINGS = {
         "common_claude_cli_node_cache": "Claude CLI Node.js cache",
         "common_claude_native_host_logs": "Claude Native Host logs",
         "common_claude_desktop": "Claude Desktop {name}",
+        "privacy_claude": "Claude history and metadata",
+        "privacy_codex": "Codex history, metadata, and artifacts",
         "windows_only": "This tool supports Windows only.",
     },
 }
@@ -204,6 +216,58 @@ class CommonTarget:
     name: str
     path: Path
     action: str
+
+
+CLAUDE_SESSION_METADATA_KEYS = frozenset(
+    {
+        "lastAPIDuration",
+        "lastAPIDurationWithoutRetries",
+        "lastCost",
+        "lastDuration",
+        "lastFpsAverage",
+        "lastFpsLow1Pct",
+        "lastGracefulShutdown",
+        "lastHintSessionId",
+        "lastLinesAdded",
+        "lastLinesRemoved",
+        "lastModelUsage",
+        "lastSessionFirstPrompt",
+        "lastSessionId",
+        "lastSessionMetrics",
+        "lastSessionModified",
+        "lastStartTime",
+        "lastToolDuration",
+        "lastTotalCacheCreationInputTokens",
+        "lastTotalCacheReadInputTokens",
+        "lastTotalInputTokens",
+        "lastTotalOutputTokens",
+        "lastTotalWebSearchRequests",
+        "lastVersionBase",
+    }
+)
+
+CODEX_GLOBAL_TRANSIENT_KEYS = frozenset(
+    {
+        "heartbeat-thread-permissions-by-id",
+        "prompt-history",
+        "projectless-thread-ids",
+        "queued-follow-ups",
+        "thread-descriptions-v1",
+        "thread-project-assignments",
+        "thread-projectless-output-directories",
+        "thread-workspace-root-hints",
+        "unread-thread-ids-by-host-v1",
+    }
+)
+
+CODEX_GLOBAL_NESTED_HISTORY_KEYS = frozenset(
+    {
+        "heartbeat-thread-permissions-by-id",
+        "prompt-history",
+        "thread-descriptions-v1",
+        "unread-thread-ids-by-host-v1",
+    }
+)
 
 
 def folder_size(path: Path) -> int:
@@ -335,6 +399,22 @@ def codex_history_path() -> Path:
 
 def codex_global_state_path() -> Path:
     return codex_home() / ".codex-global-state.json"
+
+
+def codex_goals_db_path() -> Path:
+    return codex_home() / "goals_1.sqlite"
+
+
+def codex_memories_db_path() -> Path:
+    return codex_home() / "memories_1.sqlite"
+
+
+def codex_attachments_path() -> Path:
+    return codex_home() / "attachments"
+
+
+def codex_generated_images_path() -> Path:
+    return codex_home() / "generated_images"
 
 
 def codex_sessions_path() -> Path:
@@ -649,6 +729,366 @@ def remove_jsonl_lines_by_field(path: Path, field: str, ids: set[str]) -> None:
     temp_path.replace(path)
 
 
+def collect_claude_session_ids() -> set[str]:
+    """Collect session IDs before removing Claude project files."""
+    root = claude_projects_path()
+    if not root.exists():
+        return set()
+
+    session_ids = set()
+    for path in root.rglob("*.jsonl"):
+        session_ids.add(path.stem)
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    session_id = item.get("sessionId")
+                    if isinstance(session_id, str) and session_id.strip():
+                        session_ids.add(session_id.strip())
+        except OSError:
+            continue
+    return session_ids
+
+
+def clear_sql_tables(db_path: Path, table_names: set[str]) -> None:
+    """Delete selected data tables and checkpoint WAL contents without deleting the DB file."""
+    if not db_path.exists() or not table_names:
+        return
+
+    con = sqlite3.connect(db_path)
+    try:
+        cur = con.cursor()
+        existing_tables = {
+            row[0] for row in cur.execute("select name from sqlite_master where type='table'")
+        }
+        cur.execute("begin")
+        for table_name in sorted(existing_tables & table_names):
+            quoted_name = '"' + table_name.replace('"', '""') + '"'
+            cur.execute(f"delete from {quoted_name}")
+        con.commit()
+        checkpoint_sqlite(con, db_path, vacuum=True)
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+def clean_codex_auxiliary_databases() -> None:
+    clear_sql_tables(
+        codex_db_path(),
+        {
+            "agent_job_items",
+            "agent_jobs",
+            "stage1_outputs",
+            "thread_dynamic_tools",
+            "thread_goals",
+            "thread_spawn_edges",
+            "threads",
+        },
+    )
+    clear_sql_tables(
+        codex_goals_db_path(),
+        {"thread_goal_continuation_deferrals", "thread_goals"},
+    )
+    clear_sql_tables(codex_memories_db_path(), {"jobs", "stage1_outputs"})
+
+
+def clean_claude_session_metadata(path: Path) -> bool:
+    """Remove session metrics/prompts while preserving Claude login and project settings."""
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: JSON root is not an object")
+
+    changed = False
+    projects = data.get("projects")
+    if isinstance(projects, dict):
+        for project in projects.values():
+            if not isinstance(project, dict):
+                continue
+            for key in CLAUDE_SESSION_METADATA_KEYS:
+                if key in project:
+                    project.pop(key, None)
+                    changed = True
+    if not changed:
+        return False
+
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(path)
+    return True
+
+
+def _remove_project_references(container: dict, stale_cwds: set[str], remove_all: bool) -> bool:
+    """Remove local project references without touching unrelated app settings."""
+    changed = False
+    local_projects = container.get("local-projects")
+    removed_project_ids: set[str] = set()
+    if isinstance(local_projects, dict):
+        for project_id, project in list(local_projects.items()):
+            root_paths = project.get("rootPaths", []) if isinstance(project, dict) else []
+            normalized_roots = {
+                normalize_codex_workspace_path(root)
+                for root in root_paths
+                if isinstance(root, str)
+            }
+            if remove_all or normalized_roots & stale_cwds:
+                removed_project_ids.add(str(project_id))
+                local_projects.pop(project_id, None)
+                changed = True
+
+    if removed_project_ids or remove_all:
+        for key in ["project-order", "electron-saved-workspace-roots", "active-workspace-roots"]:
+            value = container.get(key)
+            if isinstance(value, list):
+                filtered = [
+                    item
+                    for item in value
+                    if not (
+                        isinstance(item, str)
+                        and (
+                            item in removed_project_ids
+                            or normalize_codex_workspace_path(item) in stale_cwds
+                        )
+                    )
+                ]
+                if len(filtered) != len(value):
+                    container[key] = filtered
+                    changed = True
+            elif isinstance(value, str) and (
+                value in removed_project_ids
+                or normalize_codex_workspace_path(value) in stale_cwds
+            ):
+                container.pop(key, None)
+                changed = True
+
+        selected = container.get("selected-project")
+        if isinstance(selected, dict) and (
+            remove_all or selected.get("projectId") in removed_project_ids
+        ):
+            container.pop("selected-project", None)
+            changed = True
+
+    assignments = container.get("thread-project-assignments")
+    if isinstance(assignments, dict):
+        for thread_id, assignment in list(assignments.items()):
+            if not isinstance(assignment, dict):
+                continue
+            project_id = assignment.get("projectId")
+            cwd = normalize_codex_workspace_path(assignment.get("cwd", ""))
+            if remove_all or project_id in removed_project_ids or cwd in stale_cwds:
+                assignments.pop(thread_id, None)
+                changed = True
+
+    return changed
+
+
+def _remove_nested_codex_history(container: dict) -> bool:
+    """Remove nested conversation state used by current Codex Desktop builds."""
+    changed = False
+    for key in list(container):
+        if key in {
+            "prompt-history",
+            "heartbeat-thread-permissions-by-id",
+            "thread-descriptions-v1",
+            "unread-thread-ids-by-host-v1",
+        } or key.startswith("thread-client-id-v1:"):
+            container.pop(key, None)
+            changed = True
+    return changed
+
+
+def clean_codex_global_state(
+    path: Path,
+    stale_cwds: set[str] | None = None,
+    remove_all_history: bool = False,
+) -> bool:
+    """Remove Codex conversation/project metadata while preserving auth and app settings."""
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: JSON root is not an object")
+
+    changed = False
+    if remove_all_history:
+        for key in list(data):
+            if key in CODEX_GLOBAL_TRANSIENT_KEYS or key.startswith("thread-client-id-v1:"):
+                data.pop(key, None)
+                changed = True
+
+    stale_cwds = stale_cwds or set()
+    changed |= _remove_project_references(data, stale_cwds, remove_all_history)
+    nested_state = data.get("electron-persisted-atom-state")
+    if isinstance(nested_state, dict):
+        changed |= _remove_project_references(nested_state, stale_cwds, remove_all_history)
+        if remove_all_history:
+            changed |= _remove_nested_codex_history(nested_state)
+    if not changed:
+        return False
+
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    temp_path.replace(path)
+    return True
+
+
+def path_has_files(path: Path) -> bool:
+    """Return whether a file or directory contains meaningful data."""
+    try:
+        if path.is_file():
+            return path.stat().st_size > 0
+        if path.is_dir():
+            return any(item.is_file() for item in path.rglob("*"))
+    except OSError:
+        # An inaccessible target must be treated as present so cleanup reports
+        # the access error instead of silently displaying zero targets.
+        return True
+    return False
+
+
+def sqlite_tables_have_rows(path: Path, table_names: set[str]) -> bool:
+    if not path.exists() or not table_names:
+        return False
+    try:
+        con = sqlite3.connect(f"file:{path.resolve().as_posix()}?mode=ro", uri=True)
+        try:
+            existing_tables = {
+                row[0] for row in con.execute("select name from sqlite_master where type='table'")
+            }
+            for table_name in sorted(existing_tables & table_names):
+                quoted_name = '"' + table_name.replace('"', '""') + '"'
+                if con.execute(f"select 1 from {quoted_name} limit 1").fetchone() is not None:
+                    return True
+        finally:
+            con.close()
+    except (OSError, sqlite3.Error):
+        # Let the cleanup path attempt the operation and report the real error.
+        return True
+    return False
+
+
+def claude_session_metadata_present(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True
+    if not isinstance(data, dict):
+        return True
+    projects = data.get("projects")
+    if not isinstance(projects, dict):
+        return False
+    return any(
+        isinstance(project, dict) and any(key in project for key in CLAUDE_SESSION_METADATA_KEYS)
+        for project in projects.values()
+    )
+
+
+def codex_global_history_present(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True
+    if not isinstance(data, dict):
+        return True
+
+    def container_has_history(container: dict, nested: bool = False) -> bool:
+        history_keys = CODEX_GLOBAL_NESTED_HISTORY_KEYS if nested else CODEX_GLOBAL_TRANSIENT_KEYS
+        if any(container.get(key) for key in history_keys) or any(
+            key.startswith("thread-client-id-v1:") for key in container
+        ):
+            return True
+        for key in ["local-projects", "project-order", "active-workspace-roots", "selected-project"]:
+            value = container.get(key)
+            if value:
+                return True
+        return False
+
+    if container_has_history(data):
+        return True
+    nested_state = data.get("electron-persisted-atom-state")
+    return isinstance(nested_state, dict) and container_has_history(nested_state, nested=True)
+
+
+def claude_privacy_data_present() -> bool:
+    if any(
+        path_has_files(path)
+        for path in [
+            claude_projects_path(),
+            claude_history_path(),
+            *claude_desktop_code_sessions_paths(),
+        ]
+    ):
+        return True
+    return any(
+        claude_session_metadata_present(path)
+        for path in [claude_json_path(), home() / ".claude.json.backup"]
+    )
+
+
+def codex_privacy_data_present() -> bool:
+    if any(
+        path_has_files(path)
+        for path in [
+            codex_history_path(),
+            codex_index_path(),
+            codex_sessions_path(),
+            codex_archived_sessions_path(),
+            codex_attachments_path(),
+            codex_generated_images_path(),
+            codex_documents_path(),
+        ]
+    ):
+        return True
+    if codex_global_history_present(codex_global_state_path()):
+        return True
+    if codex_global_history_present(codex_global_state_path().with_suffix(".json.bak")):
+        return True
+    return any(
+        sqlite_tables_have_rows(path, table_names)
+        for path, table_names in [
+            (
+                codex_db_path(),
+                {
+                    "agent_job_items",
+                    "agent_jobs",
+                    "stage1_outputs",
+                    "thread_dynamic_tools",
+                    "thread_goals",
+                    "thread_spawn_edges",
+                    "threads",
+                },
+            ),
+            (codex_logs_db_path(), {"logs"}),
+            (codex_goals_db_path(), {"thread_goal_continuation_deferrals", "thread_goals"}),
+            (codex_memories_db_path(), {"jobs", "stage1_outputs"}),
+        ]
+    )
+
+
+def checkpoint_sqlite(con: sqlite3.Connection, path: Path, vacuum: bool = False) -> None:
+    result = con.execute("pragma wal_checkpoint(TRUNCATE)").fetchone()
+    if result and result[0]:
+        raise sqlite3.OperationalError(tr("sqlite_checkpoint_failed", path=path))
+    if vacuum:
+        con.execute("vacuum")
+
+
 def delete_sql_rows(db_path: Path, statements: list[tuple[str, list[str]]]) -> None:
     if not db_path.exists() or not statements:
         return
@@ -664,6 +1104,7 @@ def delete_sql_rows(db_path: Path, statements: list[tuple[str, list[str]]]) -> N
             if table_name in existing_tables:
                 cur.execute(sql, params)
         con.commit()
+        checkpoint_sqlite(con, db_path, vacuum=True)
     except Exception:
         con.rollback()
         raise
@@ -708,6 +1149,7 @@ def delete_codex_log_rows(ids: set[str]) -> None:
         if "logs" in existing_tables:
             cur.execute(f"delete from logs where thread_id in ({placeholders})", list(ids))
         con.commit()
+        checkpoint_sqlite(con, codex_logs_db_path(), vacuum=True)
     except Exception:
         con.rollback()
         raise
@@ -757,33 +1199,7 @@ def prune_codex_global_project_state(deleted_cwds: set[str]) -> None:
     if not stale_cwds:
         return
 
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return
-    if not isinstance(data, dict):
-        return
-
-    changed = False
-    for key in ["electron-saved-workspace-roots", "project-order", "active-workspace-roots"]:
-        values = data.get(key)
-        if not isinstance(values, list):
-            continue
-        filtered = [
-            value
-            for value in values
-            if not (isinstance(value, str) and normalize_codex_workspace_path(value) in stale_cwds)
-        ]
-        if len(filtered) != len(values):
-            data[key] = filtered
-            changed = True
-
-    if not changed:
-        return
-
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    temp_path.replace(path)
+    clean_codex_global_state(path, stale_cwds=stale_cwds)
 
 
 def update_claude_json_last_sessions(session_ids: set[str]) -> None:
@@ -792,10 +1208,15 @@ def update_claude_json_last_sessions(session_ids: set[str]) -> None:
         return
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return
+    except Exception as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: JSON root is not an object")
     changed = False
-    for project in data.get("projects", {}).values():
+    projects = data.get("projects", {})
+    if not isinstance(projects, dict):
+        return
+    for project in projects.values():
         if isinstance(project, dict) and project.get("lastSessionId") in session_ids:
             project.pop("lastSessionId", None)
             project.pop("lastSessionMetrics", None)
@@ -844,6 +1265,13 @@ def cleanup_empty_dirs(root: Path) -> None:
             pass
 
 
+def run_cleanup_step(errors: list[str], label: str, action) -> None:
+    try:
+        action()
+    except Exception as exc:
+        errors.append(f"{label}: {exc}")
+
+
 def delete_selected_records(records: list[CleanRecord]) -> tuple[int, list[str]]:
     errors = []
     deleted = []
@@ -857,14 +1285,36 @@ def delete_selected_records(records: list[CleanRecord]) -> tuple[int, list[str]]
     codex_ids = {record.record_id for record in deleted if record.provider == PROVIDER_CODEX}
     codex_cwds = {record.cwd for record in deleted if record.provider == PROVIDER_CODEX and record.cwd}
     claude_ids = {record.record_id for record in deleted if record.provider == PROVIDER_CLAUDE}
-    delete_codex_db_rows(codex_ids)
-    delete_codex_log_rows(codex_ids)
-    remove_jsonl_lines_by_field(codex_index_path(), "id", codex_ids)
-    remove_jsonl_lines_by_field(codex_history_path(), "session_id", codex_ids)
-    prune_codex_global_project_state(codex_cwds)
-    remove_jsonl_lines_by_field(claude_history_path(), "sessionId", claude_ids)
-    update_claude_json_last_sessions(claude_ids)
-    errors.extend(delete_claude_desktop_code_session_files(claude_ids))
+
+    if codex_ids:
+        run_cleanup_step(errors, tr("privacy_codex"), lambda: delete_codex_db_rows(codex_ids))
+        run_cleanup_step(errors, tr("common_codex_logs_db"), lambda: delete_codex_log_rows(codex_ids))
+        run_cleanup_step(
+            errors,
+            tr("jsonl_history"),
+            lambda: remove_jsonl_lines_by_field(codex_index_path(), "id", codex_ids),
+        )
+        run_cleanup_step(
+            errors,
+            tr("jsonl_history"),
+            lambda: remove_jsonl_lines_by_field(codex_history_path(), "session_id", codex_ids),
+        )
+        run_cleanup_step(errors, tr("privacy_codex"), lambda: prune_codex_global_project_state(codex_cwds))
+
+    if claude_ids:
+        run_cleanup_step(
+            errors,
+            tr("privacy_claude"),
+            lambda: remove_jsonl_lines_by_field(claude_history_path(), "sessionId", claude_ids),
+        )
+        run_cleanup_step(errors, tr("privacy_claude"), lambda: update_claude_json_last_sessions(claude_ids))
+        desktop_errors: list[str] = []
+        run_cleanup_step(
+            errors,
+            tr("privacy_claude"),
+            lambda: desktop_errors.extend(delete_claude_desktop_code_session_files(claude_ids)),
+        )
+        errors.extend(desktop_errors)
 
     for root in [
         codex_sessions_path(),
@@ -873,6 +1323,13 @@ def delete_selected_records(records: list[CleanRecord]) -> tuple[int, list[str]]
         claude_projects_path(),
     ]:
         cleanup_empty_dirs(root)
+
+    for record in deleted:
+        try:
+            if Path(record.path).exists():
+                errors.append(f"{record.title}: {tr('privacy_remaining', name=record.path)}")
+        except OSError as exc:
+            errors.append(f"{record.title}: {exc}")
     return len(deleted), errors
 
 
@@ -903,8 +1360,7 @@ def clean_codex_logs_db_all() -> None:
         if "logs" in tables:
             cur.execute("delete from logs")
         con.commit()
-        cur.execute("pragma wal_checkpoint(TRUNCATE)")
-        cur.execute("vacuum")
+        checkpoint_sqlite(con, path, vacuum=True)
     except Exception:
         con.rollback()
         raise
@@ -1017,6 +1473,62 @@ def common_targets() -> list[CommonTarget]:
     return [target for target in targets if target.path.exists()]
 
 
+def privacy_target_count() -> int:
+    return int(claude_privacy_data_present()) + int(codex_privacy_data_present())
+
+
+def clean_privacy_traces() -> tuple[int, list[str]]:
+    """Remove local AI history data while preserving authentication and app configuration."""
+    errors = []
+    cleaned = 0
+
+    if claude_privacy_data_present():
+        try:
+            claude_session_ids = collect_claude_session_ids()
+            remove_jsonl_lines_by_field(claude_history_path(), "sessionId", claude_session_ids)
+            for path in [claude_json_path(), home() / ".claude.json.backup"]:
+                clean_claude_session_metadata(path)
+            delete_dir_contents(claude_projects_path())
+            cleanup_empty_dirs(claude_projects_path())
+            for path in claude_desktop_code_sessions_paths():
+                delete_dir_contents(path)
+                cleanup_empty_dirs(path)
+        except Exception as exc:
+            errors.append(f"{tr('privacy_claude')}: {exc}")
+        else:
+            if claude_privacy_data_present():
+                errors.append(tr("privacy_remaining", name=tr("privacy_claude")))
+            else:
+                cleaned += 1
+
+    if codex_privacy_data_present():
+        try:
+            clean_codex_auxiliary_databases()
+            clean_codex_logs_db_all()
+            truncate_file(codex_history_path())
+            truncate_file(codex_index_path())
+            for path in [
+                codex_sessions_path(),
+                codex_archived_sessions_path(),
+                codex_attachments_path(),
+                codex_generated_images_path(),
+                codex_documents_path(),
+            ]:
+                delete_dir_contents(path)
+                cleanup_empty_dirs(path)
+            for path in [codex_global_state_path(), codex_global_state_path().with_suffix(".json.bak")]:
+                clean_codex_global_state(path, remove_all_history=True)
+        except Exception as exc:
+            errors.append(f"{tr('privacy_codex')}: {exc}")
+        else:
+            if codex_privacy_data_present():
+                errors.append(tr("privacy_remaining", name=tr("privacy_codex")))
+            else:
+                cleaned += 1
+
+    return cleaned, errors
+
+
 def clean_common_traces() -> tuple[int, list[str]]:
     errors = []
     cleaned = 0
@@ -1077,6 +1589,7 @@ class App(tk.Tk):
         self.checked_keys: set[str] = set()
         self.search_var = tk.StringVar(value="")
         self.common_var = tk.BooleanVar(value=True)
+        self.privacy_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="")
         self.sort_column = "updated"
         self.sort_reverse = True
@@ -1208,7 +1721,7 @@ class App(tk.Tk):
 
         top = ttk.Frame(self, padding=(12, 10, 12, 8))
         top.grid(row=0, column=0, sticky="ew")
-        top.columnconfigure(5, weight=1)
+        top.columnconfigure(6, weight=1)
 
         ttk.Button(top, text=tr("delete"), command=self.delete_checked).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(top, text=tr("reload"), command=self.refresh).grid(row=0, column=1, padx=(0, 8))
@@ -1217,9 +1730,12 @@ class App(tk.Tk):
         ttk.Checkbutton(top, text=tr("delete_common"), variable=self.common_var, command=self.update_status).grid(
             row=0, column=4, padx=(0, 12)
         )
-        ttk.Label(top, text=tr("search")).grid(row=0, column=6, padx=(0, 6), sticky="e")
+        ttk.Checkbutton(top, text=tr("delete_privacy"), variable=self.privacy_var, command=self.update_status).grid(
+            row=0, column=5, padx=(0, 12)
+        )
+        ttk.Label(top, text=tr("search")).grid(row=0, column=7, padx=(0, 6), sticky="e")
         search = ttk.Entry(top, textvariable=self.search_var, width=28)
-        search.grid(row=0, column=7, sticky="e")
+        search.grid(row=0, column=8, sticky="e")
         search.bind("<KeyRelease>", lambda _event: self.refresh())
 
         self.tree = ttk.Treeview(self, columns=self.columns, show="headings", selectmode="none")
@@ -1508,7 +2024,16 @@ class App(tk.Tk):
 
     def update_status(self) -> None:
         common_count = len(common_targets()) if self.common_var.get() else 0
-        self.status_var.set(tr("status_line", shown=len(self.records), checked=len(self.checked_keys), common=common_count))
+        privacy_count = privacy_target_count() if self.privacy_var.get() else 0
+        self.status_var.set(
+            tr(
+                "status_line",
+                shown=len(self.records),
+                checked=len(self.checked_keys),
+                common=common_count,
+                privacy=privacy_count,
+            )
+        )
 
     def toggle_checked(self, key: str) -> None:
         if key in self.checked_keys:
@@ -1530,8 +2055,19 @@ class App(tk.Tk):
 
     def delete_checked(self) -> None:
         records = self.checked_records()
-        if not records and not self.common_var.get():
+        if not records and not self.common_var.get() and not self.privacy_var.get():
             messagebox.showinfo(APP_NAME, tr("select_to_delete"))
+            return
+
+        titles = "\n".join(f"- [{record.provider}] {record.title}" for record in records[:10])
+        if len(records) > 10:
+            titles += "\n" + tr("more_items", count=len(records) - 10)
+        common_text = tr("delete_common_confirm") if self.common_var.get() else ""
+        privacy_text = tr("delete_privacy_confirm") if self.privacy_var.get() else ""
+        if not messagebox.askyesno(
+            APP_NAME,
+            tr("confirm_delete", count=len(records), common_text=common_text + privacy_text, titles=titles),
+        ):
             return
 
         codex_desktop_pids = codex_desktop_process_ids()
@@ -1554,35 +2090,35 @@ class App(tk.Tk):
                 self.refresh()
                 return
 
-        titles = "\n".join(f"- [{record.provider}] {record.title}" for record in records[:10])
-        if len(records) > 10:
-            titles += "\n" + tr("more_items", count=len(records) - 10)
-        common_text = tr("delete_common_confirm") if self.common_var.get() else ""
-        if not messagebox.askyesno(
-            APP_NAME,
-            tr("confirm_delete", count=len(records), common_text=common_text, titles=titles),
-        ):
-            return
-
         record_deleted, record_errors = delete_selected_records(records)
         common_deleted = 0
         common_errors = []
         if self.common_var.get():
             common_deleted, common_errors = clean_common_traces()
+        privacy_deleted = 0
+        privacy_errors = []
+        if self.privacy_var.get():
+            privacy_deleted, privacy_errors = clean_privacy_traces()
 
         self.checked_keys.clear()
         self.refresh()
 
-        errors = record_errors + common_errors
+        errors = record_errors + common_errors + privacy_errors
         if errors:
             messagebox.showwarning(
                 APP_NAME,
-                tr("processed_warning", records=record_deleted, common=common_deleted, errors="\n".join(errors[:10])),
+                tr(
+                    "processed_warning",
+                    records=record_deleted,
+                    common=common_deleted,
+                    privacy=privacy_deleted,
+                    errors="\n".join(errors[:10]),
+                ),
             )
         else:
             messagebox.showinfo(
                 APP_NAME,
-                tr("processed_info", records=record_deleted, common=common_deleted),
+                tr("processed_info", records=record_deleted, common=common_deleted, privacy=privacy_deleted),
             )
 
 
