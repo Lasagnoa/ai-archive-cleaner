@@ -1,105 +1,73 @@
-# AI Archive Cleaner
+﻿# AI Archive Cleaner
 
 [English](README.en.md)
 
-AI Archive Cleaner は、Codex と Claude のローカルチャット履歴・生成物・一時ログを削除する Windows 向け GUI ツールです。
+Codex / Claude のローカルチャット履歴・生成物・ログを削除する Windows 向けGUIツール。日本語OSでは日本語、それ以外では英語で表示します。
 
-日本語環境では日本語UI、それ以外のOS言語では英語UIで起動します。
+## ダウンロードと使い方
 
-## 対応環境
+[GitHub Releases](https://github.com/Lasagnoa/ai-archive-cleaner/releases/latest) から `AIArchiveCleaner.exe` をダウンロードして起動してください。Windows 10 / 11 対応。
 
-- Windows 10 / 11
-- ソースから起動する場合は Python 3.11 以降
-- Codex App / Codex CLI のローカルファイル
-- Claude Desktop / Claude Code / Claude CLI のローカルファイル
+1. 一覧を確認し、個別に削除するチャット・生成物にチェックを入れます。
+2. 必要に応じて「共通ログ/キャッシュ」または「履歴・プロジェクト一覧・Codex内部ブラウザーも全削除」を有効にします。
+3. 「削除」で対象範囲を確認します。対象アプリが動いている場合は、確認のうえ終了してから処理します。
+4. 未完了の場合はスクロールできる結果画面で全エラーを確認します。部分的に削除済みの場合があるため、完了件数だけで判断しないでください。
 
-現在のリリースは Windows 専用です。macOS / Linux は、保存場所・プロセス制御・フォルダを開く処理が異なるため未対応です。
+バックアップは作りません。全削除は一覧の選択や検索条件に関係なく、Claude/Codex両方の対応するローカルデータを対象にします。
 
-## 削除できるもの
+## 削除範囲
 
-一覧で選択して削除できるもの:
+| モード | 対象 |
+|---|---|
+| 選択削除 | 会話、本文、索引、目標・メモリー・要約・表示情報などタスクIDで特定できる関連データ、選択したDocuments/Codex配下の生成物 |
+| 共通ログ/キャッシュ | Codex Desktop/CLIのログと既知の一時キャッシュ、Claudeの既存対応ログ・キャッシュ。内部ブラウザーのCookieは消しません |
+| 全削除 | 上記に加え、旧DB、入力下書き、会話説明、添付、生成画像、visualizations、提案データ、音声継続情報、プロセス履歴、JSONの書き込み残骸、Codexプロジェクト一覧、内部ブラウザー専用プロファイルのサイトデータ・Cookie・ログイン情報 |
 
-- Codex のチャット履歴
-- Claude Code / Claude CLI の JSONL 履歴
-- `Documents\Codex` 配下の生成物
+- Codexの現在・旧保存先（`.codex` と `.codex/sqlite`）、対応するDB世代、`CODEX_HOME`、`sqlite_home` / `CODEX_SQLITE_HOME`、`log_dir`、WindowsのDocuments保存場所を考慮します。
+- 本文がなくタイトルだけ残ったローカルカタログや、DBに未登録のJSONLも一覧に表示します。
+- 全削除では、このPC内にキャッシュされた他ホスト・ChatGPTのタイトルや要約も消します。外部サービスや別PCの履歴を削除するAPIは呼びません。
+- 個別削除はローカルの対象タスクだけを処理します。共有プロンプト履歴、IDで所有者を特定できない添付・生成物、ブラウザー全体のデータは全削除で扱います。
+- 内部ブラウザーは `codex-browser-*` 専用領域とタブ復元情報を対象にします。Codex本体の認証を含み得る共有プロファイルのCookie・Local Storage等は保護します。
+- Claudeの全削除では、元セッションが既にない `history.jsonl` の孤立行も消します。
 
-選択したチャットやセッションを削除すると、対応するローカル索引・履歴行・関連メタデータも可能な範囲で掃除します。
+## 保持するもの
 
-共通ログ/キャッシュの削除を有効にすると、以下も削除します。
+- **Codex本体のログイン情報**（`auth.json` 等）、MCP接続設定・資格情報、`config.toml`、一般設定、`AGENTS.md`、キーバインド。
+- スキル、プラグイン、ペット、sandbox設定・資格情報、ブラウザー連携設定、自動化の定義。
+- **保存済みプロジェクト一覧の登録先にある実ソース・リポジトリ**。ただし、ユーザーが生成物として指定した `Documents/Codex` 配下は削除対象です。
+- Claudeの認証・MCP・権限設定、設定ファイル、DesktopのIndexedDB/Local Storage等、従来対象外の保存領域。
+- 通常のChrome/Edge等、外部ブラウザーのプロファイル。
 
-- Codex のログDB、TUIログ、sandboxログ
-- Claude Code の `session-env` と `shell-snapshots`
-- `AppData\Local\claude-cli-nodejs\Cache`
-- Claude Desktop のログや一時的な Electron キャッシュ
-  - `Cache`
-  - `Code Cache`
-  - `Crashpad`
-  - `GPUCache`
-  - `Shared Dictionary`
+保存済みCodexプロジェクト一覧と選択状態は全削除で消します。内部ブラウザーのサイトのログインと、Codex本体のログインは別扱いです。
 
-「Claude/Codexの履歴・メタデータも全削除」を有効にすると、プライバシー掃除として以下も処理します。
+## エラーと未対応領域
 
-- Claude Code `projects` 配下の履歴・メモ・ツール結果
-- Claude の `history.jsonl` にある、削除前にJSONLから収集したセッションIDの行
-- Claude のプロジェクト別セッションメトリクス・直近プロンプト情報
-- Codex の会話DBデータ、ログ、`history.jsonl`、`session_index.jsonl`
-- Codex の `sessions` / `archived_sessions`、添付ファイル、生成画像、`Documents\Codex` の生成物
-- Codex のプロンプト履歴・スレッド説明・作業フォルダヒントなどの会話メタデータ
-- Codex Desktop のローカルプロジェクト一覧と選択状態
+- 読み取り専用Gitファイルは、対象ファイルの属性だけを解除して再試行します。ACLや管理者権限を変更しません。
+- リンク・ジャンクション経由の削除と、設定・認証フォルダに重なる再帰削除を拒否します。
+- 独立した処理はエラー後も継続し、DB/JSON/ファイルを確認します。未知の非空DB・テーブルは削除せず、未対応として報告します。
+- `cleanup_backups`、`memories_extensions`、`worktrees` にファイルがある場合は、構成や実作業データの可能性があるため自動削除せず手動確認を報告します。
+- 今後追加される任意の保存先・設定と混在した未知のデータまでを、完全消去できるとは保証しません。
 
-この処理でも、ログイン情報と本体設定は削除しません。Claude の `.credentials.json`、`settings.json`、`.claude.json` の認証・MCP・権限設定、Codex の `auth.json`、`config.toml`、プラグイン、スキル、一般的なアプリ設定は保持します。Codex Desktop の表示用ローカルプロジェクト台帳だけは、履歴と一緒に整理します。
+## ディスク全体バックアップについて
 
-## 削除しないもの
+このツールは対応するローカルファイルとDB内の履歴を整理するもので、媒体の完全消去ツールではありません。SQLiteではsecure_delete、VACUUM、WALの切り詰めを行いますが、削除済み領域、復元ポイント、過去のバックアップ、任意の場所に複製された生成物、クラウド側履歴は対象外です。
 
-- Codex / Claude の認証情報
-- 主要設定ファイル
-- Codex の認証情報 `auth.json`
-- Codex の本体設定 `config.toml`
-- Claude Code の認証情報 `.claude\.credentials.json`
-- Claude Code のユーザー設定 `settings.json`
-- プラグイン本体
-- スキル本体
-- Claude Desktop の `IndexedDB`
-- Claude Desktop の `Local Storage`
-- Claude Desktop の `Session Storage`
-- Claude Desktop の `WebStorage`
-- Claude Web のクラウド側チャット履歴
-- Claude Memory（クラウド側）
+バックアップソフトが未使用セクタまで複製するかは別途確認してください。本体のログインを保持するため、アカウントから取得できるクラウド情報は再表示される場合があります。
 
-バックアップは作成しません。削除操作は自己責任で実行してください。
+## 開発・検証・ビルド
 
-## 使い方
-
-Release から `AIArchiveCleaner.exe` をダウンロードして起動してください。
-
-ソースから起動する場合:
+Python 3.11以降。実行時の依存は標準ライブラリのみです。
 
 ```powershell
-python app.py
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe app.py
+.\.venv\Scripts\python.exe -m unittest -v test_cleanup
+.\build_exe.ps1 -InstallDependencies
 ```
 
-または `run.bat` を実行します。
+既存環境で依存が揃っていれば `.\build_exe.ps1` だけでビルドできます。テストに失敗した場合はビルドを中止します。出力は `dist/AIArchiveCleaner.exe`。PyInstallerはプロジェクト内 `.venv` にのみインストールします。
 
-## exe のビルド
-
-```powershell
-.\build_exe.ps1
-```
-
-出力先:
-
-```text
-dist\AIArchiveCleaner.exe
-```
-
-ビルドスクリプトは `.venv` を作成し、PyInstaller を仮想環境内にインストールします。グローバル環境にはインストールしません。
-
-## 開発メモ
-
-- 実行時の依存は Python 標準ライブラリのみです。
-- ビルド時のみ PyInstaller を使います。
-- `favicon.ico` はウィンドウアイコンと exe アイコンに使います。
-- UI 言語は OS のロケールから自動判定します。
+テストは隔離されたダミーデータを使い、本物の会話や設定を削除しません。認証・設定保持、内部ブラウザーのCookie削除、旧DB、孤立カタログ、部分失敗、読み取り専用ファイル、リンク境界を確認します。
 
 ## ライセンス
 

@@ -8,3 +8,6 @@ dist/
 
 *.log
 *.tmp
+
+# Local audits can contain private thread titles and machine paths.
+/AUDIT-*.md
