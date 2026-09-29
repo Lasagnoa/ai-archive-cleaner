@@ -51,7 +51,14 @@ HISTORY_FILES = ("history.jsonl", "session_index.jsonl", "transcription-history.
 
 
 def lexical(path: Path) -> Path:
-    return Path(os.path.abspath(path.expanduser()))
+    value = str(path.expanduser())
+    if os.name == "nt":
+        if value.startswith("\\\\?\\UNC\\"):
+            value = "\\\\" + value[8:]
+        elif (value.startswith("\\\\?\\") and len(value) >= 7
+              and value[4].isalpha() and value[5:7] == ":\\"):
+            value = value[4:]
+    return Path(os.path.abspath(value))
 
 
 def beneath(path: Path, root: Path) -> bool:

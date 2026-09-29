@@ -237,6 +237,28 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(len(self.rows(state, "threads")), 2)
         self.assertTrue(p.exists())
 
+    @unittest.skipUnless(os.name == "nt", "Windows extended paths only")
+    def test_selected_extended_rollout_path_is_listed_once_and_deleted(self):
+        p = self.file(self.home / "sessions" / f"rollout-{T1}.jsonl", "{}\n")
+        extended = "\\\\?\\" + str(p)
+        state = self.db("state_5.sqlite", "CREATE TABLE threads(id TEXT, title TEXT, rollout_path TEXT, archived INT, updated_at INT);")
+        with closing(sqlite3.connect(state)) as con:
+            con.execute("INSERT INTO threads VALUES (?, ?, ?, ?, ?)", (T1, "test", extended, 0, 1))
+            con.commit()
+
+        records = cc.list_threads(self.storage)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0][2], extended)
+        outside = self.file(self.root / "unrelated.jsonl")
+        outside_extended = "\\\\?\\" + str(outside)
+        self.assertTrue(any("Outside transcript boundary" in error for error in
+                            cc.delete_selected(self.storage, {T1}, [outside_extended])))
+        self.assertTrue(outside.exists())
+        self.assertEqual(len(self.rows(state, "threads")), 1)
+        self.assertEqual(cc.delete_selected(self.storage, {T1}, [extended]), [])
+        self.assertFalse(p.exists())
+        self.assertEqual(self.rows(state, "threads"), [])
+
     def test_common_cleanup_does_not_log_out_browser_or_remove_history(self):
         p = self.file(self.desktop / "Partitions/codex-browser-app/Network/Cookies", "KEEP")
         state = self.state()
