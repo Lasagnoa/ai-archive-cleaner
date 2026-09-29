@@ -151,6 +151,32 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(self.rows(p, "threads"), [])
         self.assertEqual(self.rows(p, "new_history"), [("private",)])
 
+    def test_consolidation_progress_does_not_block_selected_or_full_cleanup(self):
+        p = self.db("memories_1.sqlite", f"""
+            CREATE TABLE consolidation_progress (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                max_thread_count INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO consolidation_progress VALUES (1, 7);
+            CREATE TABLE jobs (job_key TEXT);
+            INSERT INTO jobs VALUES ('{T1}');
+        """)
+        rollout = self.file(self.home / "sessions" / f"rollout-{T1}.jsonl", "{}\n")
+        self.assertEqual(cc.delete_selected(self.storage, {T1}, [str(rollout)]), [])
+        self.assertFalse(rollout.exists())
+        self.assertEqual(self.rows(p, "jobs"), [])
+        self.assertEqual(self.rows(p, "consolidation_progress"), [(1, 7)])
+        self.assertEqual(cc.cleanup_all(self.storage), [])
+        self.assertEqual(self.rows(p, "consolidation_progress"), [(1, 0)])
+
+    def test_changed_consolidation_progress_schema_is_preserved_and_reported(self):
+        p = self.db("memories_1.sqlite", """
+            CREATE TABLE consolidation_progress (singleton INTEGER PRIMARY KEY, max_thread_count INTEGER, future_data TEXT);
+            INSERT INTO consolidation_progress VALUES (1, 7, 'KEEP');
+        """)
+        self.assertTrue(any("Unsupported table" in e for e in cc.cleanup_all(self.storage)))
+        self.assertEqual(self.rows(p, "consolidation_progress"), [(1, 7, "KEEP")])
+
     def test_full_cleanup_erases_cached_titles_from_all_hosts_but_not_configuration(self):
         cat = self.db("sqlite/codex-dev.db", f"""
             CREATE TABLE local_thread_catalog(host_id TEXT,thread_id TEXT);

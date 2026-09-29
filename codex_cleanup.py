@@ -334,6 +334,16 @@ def database_rows(path: Path, ids=None, *, clean=False, logs_only=False):
         for table, columns in tables.items():
             if table in SAFE_TABLES:
                 continue
+            if (kind == "memories" and table == "consolidation_progress"
+                    and columns == {"singleton", "max_thread_count"}):
+                # Keep Codex's singleton row; full cleanup resets its history-derived count.
+                if ids is None:
+                    if clean:
+                        con.execute("update consolidation_progress set max_thread_count=0")
+                    elif con.execute("select 1 from consolidation_progress "
+                                     "where max_thread_count != 0 limit 1").fetchone():
+                        pending.append(f"Remaining: {path.name}/{table}")
+                continue
             if table not in RULES[kind]:
                 if con.execute(f"select 1 from {quote(table)} limit 1").fetchone():
                     pending.append(f"Unsupported table (preserved): {path.name}/{table}")
