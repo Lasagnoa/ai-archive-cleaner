@@ -1,6 +1,6 @@
 ﻿"""Schema-aware local Codex cleanup. Never delete authentication or whole app profiles.
 
-All filesystem mutation goes through a bounded, reparse-point rejecting helper.
+All filesystem mutation goes through a bounded helper that never follows links.
 Database/JSON operations preserve unrelated settings, and share their target
 selection with verification. Unknown database tables are reported, not erased.
 """
@@ -76,23 +76,32 @@ def reject_links(path: Path) -> None:
             raise ValueError(f"Link/reparse point is not a cleanup target: {part}")
 
 
-def checked(path: Path, root: Path, *, allow_root: bool = False) -> Path:
+def checked(path: Path, root: Path, *, allow_root: bool = False, allow_leaf_link: bool = False) -> Path:
     path, root = lexical(path), lexical(root)
     if not beneath(path, root) or (path == root and not allow_root):
         raise ValueError(f"Outside cleanup boundary: {path}")
     if root == Path(root.anchor):
         raise ValueError(f"Drive roots cannot be cleanup boundaries: {root}")
-    reject_links(path)
+    reject_links(path.parent if allow_leaf_link else path)
     return path
 
 
 def remove_path(path: Path, root: Path) -> None:
-    path = checked(path, root)
+    path = checked(path, root, allow_leaf_link=True)
     try:
         info = path.lstat()
     except FileNotFoundError:
         return
-    if stat.S_ISDIR(info.st_mode):
+    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 1024:
+        # Unlink only known symbolic links and junctions; never traverse their targets.
+        tag = getattr(info, "st_reparse_tag", None)
+        if os.name == "nt" and tag not in (0xA000000C, 0xA0000003):
+            raise ValueError(f"Unsupported reparse point (preserved): {path}")
+        if os.name == "nt" and getattr(info, "st_file_attributes", 0) & 16:
+            path.rmdir()
+        else:
+            path.unlink()
+    elif stat.S_ISDIR(info.st_mode):
         errors = []
         for child in list(path.iterdir()):
             try:
@@ -189,7 +198,7 @@ class Storage:
                    configured(data.get("log_dir")))
 
     def db_roots(self) -> list[Path]:
-        return list(dict.fromkeys(lexical(p) for p in [self.extra_db, self.home, self.home / "sqlite"] if p))
+        return list(dict.fromkeys(lexical(p) for p in [self.home, self.home / "sqlite"]))
 
     def desktops(self) -> list[Path]:
         roots = [self.roaming / "Codex"]
@@ -200,8 +209,6 @@ class Storage:
 
     def logs(self) -> list[Path]:
         roots = [self.home / "log", self.local / "Codex/Logs"]
-        if self.extra_log:
-            roots.append(self.extra_log)
         packages = self.local / "Packages"
         if packages.exists():
             roots += [p / "LocalCache/Local/Codex/Logs" for p in packages.glob("OpenAI.Codex_*")]
@@ -241,7 +248,7 @@ RULES = {
         "thread_goals": ("thread_id",), "stage1_outputs": ("thread_id",),
         "thread_spawn_edges": ("parent_thread_id", "child_thread_id"),
         "agent_job_items": ("assigned_thread_id",), "agent_jobs": (),
-        "thread_artifacts": ("thread_id",), "projects": (), "project_roots": (),
+        "thread_artifacts": ("thread_id",), "thread_read_receipts": ("thread_id",), "projects": (), "project_roots": (),
         "project_idempotency_keys": (), "rollout_migration_skipped_rollouts": (),
     },
     "thread_history": {"thread_turns": ("thread_id",), "thread_items": ("thread_id",),
@@ -340,6 +347,12 @@ def database_rows(path: Path, ids=None, *, clean=False, logs_only=False):
             con.execute("begin immediate")
         for table, columns in tables.items():
             if table in SAFE_TABLES:
+                continue
+            if kind == "state" and table == "thread_read_receipts" and columns != {
+                "thread_id", "first_unread_turn", "revision", "last_published_turn"
+            }:
+                if con.execute(f"select 1 from {quote(table)} limit 1").fetchone():
+                    pending.append(f"Unsupported table schema (preserved): {path.name}/{table}")
                 continue
             if (kind == "memories" and table == "consolidation_progress"
                     and columns == {"singleton", "max_thread_count"}):
@@ -440,7 +453,6 @@ def global_files(storage):
 
 def full_targets(storage):
     targets = [(storage.home / n, storage.home) for n in HISTORY_DIRS + HISTORY_FILES]
-    targets += [(storage.documents, storage.documents.parent)]
     if storage.home.exists():
         targets += [(p, storage.home) for pattern in ("..codex-global-state.json*tmp-*", ".codex-global-state.json*.tmp", ".codex-global-state.json*.cleaner.tmp")
                     for p in storage.home.glob(pattern)]
@@ -467,11 +479,7 @@ def full_targets(storage):
 def common_file_targets(storage):
     targets = []
     for p in storage.logs():
-        # A configured log_dir could also contain unrelated user files.
-        if storage.extra_log and lexical(p) == lexical(storage.extra_log):
-            targets += [(f, p) for f in files_under(p) if f.suffix == ".log"]
-        else:
-            targets.append((p, p.parent))
+        targets.append((p, p.parent))
     targets += [(storage.home / name, storage.home) for name in ("sandbox.log", ".sandbox/sandbox.log")]
     for desktop in storage.desktops():
         targets += [(desktop / name, desktop) for name in CACHE_DIRS]
@@ -490,14 +498,24 @@ def protected(storage):
 
 
 def delete_target(path, root, storage):
-    target = checked(path, root)
+    target = checked(path, root, allow_leaf_link=True)
     if any(beneath(target, p) or beneath(p, target) for p in protected(storage)):
         raise ValueError(f"Protected settings overlap: {target}")
     remove_path(target, root)
 
 
+def preserved_configured_paths(storage, *, logs_only=False):
+    warnings = []
+    if not logs_only and storage.extra_db and lexical(storage.extra_db) not in storage.db_roots() and storage.extra_db.exists():
+        warnings.append(f"Custom database location preserved (outside supported scope): {storage.extra_db}")
+    if storage.extra_log and lexical(storage.extra_log) not in storage.logs() and storage.extra_log.exists():
+        warnings.append(f"Custom log location preserved (outside supported scope): {storage.extra_log}")
+    return warnings
+
+
 def inspect_remaining(storage, ids=None, *, logs_only=False):
     result = Result()
+    result.errors.extend(preserved_configured_paths(storage, logs_only=logs_only))
     paths = result.step("Database discovery", lambda: databases(storage)) or []
     for path in paths:
         pending = result.step(str(path), lambda p=path: database_rows(p, ids, logs_only=logs_only))
@@ -526,6 +544,7 @@ def inspect_remaining(storage, ids=None, *, logs_only=False):
 
 def cleanup_all(storage, *, logs_only=False):
     result = Result()
+    result.errors.extend(preserved_configured_paths(storage, logs_only=logs_only))
     paths = result.step("Database discovery", lambda: databases(storage)) or []
     for path in paths:
         pending = result.step(str(path), lambda p=path: database_rows(p, clean=True, logs_only=logs_only))
@@ -647,7 +666,6 @@ def delete_selected(storage, ids: set[str], rollout_paths: list[str]):
                 for base, dirs, files in os.walk(root, followlinks=False):
                     for child in dirs + files:
                         p = Path(base) / child
-                        reject_links(p)
                         if contains_id(p.name, ids):
                             result.step(str(p), lambda p=p: delete_target(p, storage.home, storage))
                             if child in dirs:

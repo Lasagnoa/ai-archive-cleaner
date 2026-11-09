@@ -93,7 +93,7 @@ class CleanupTests(unittest.TestCase):
             self.file(self.home / name / "data.json", "private")
         for name in cc.HISTORY_FILES:
             self.file(self.home / name, "private")
-        self.file(self.storage.documents / "2026/task/output.json")
+        outside = self.file(self.storage.documents / "2026/task/output.json", "KEEP")
         temp = self.file(self.home / "..codex-global-state.json.tmp-old", "partial private JSON")
         browser_files = [self.file(self.desktop / p, "browser secret") for p in (
             "Partitions/codex-browser-app/Network/Cookies", "web/Codex/codex-browser-app/Login Data",
@@ -109,6 +109,7 @@ class CleanupTests(unittest.TestCase):
             self.assertEqual(self.rows(p, "remote_control_enrollments"), [("KEEP",)])
         self.assertEqual(self.rows(hist, "thread_items"), [])
         self.assertFalse(temp.exists())
+        self.assertEqual(outside.read_text(), "KEEP")
         self.assertTrue(all(not p.exists() for p in browser_files))
         self.assertEqual({p: hashlib.sha256(p.read_bytes()).hexdigest() for p in protected}, hashes)
         after = json.loads((self.home / ".codex-global-state.json").read_text())
@@ -118,10 +119,10 @@ class CleanupTests(unittest.TestCase):
 
     def test_independent_file_failure_does_not_skip_global_metadata(self):
         self.global_state()
-        bad = self.file(self.storage.documents / "locked.data")
+        bad = self.file(self.home / "sessions/locked.data")
         original = cc.delete_target
         def fail(path, root, storage):
-            if path == self.storage.documents:
+            if path == self.home / "sessions":
                 raise PermissionError("fixture locked")
             return original(path, root, storage)
         with patch.object(cc, "delete_target", side_effect=fail):
@@ -132,7 +133,7 @@ class CleanupTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows readonly semantics")
     def test_readonly_git_files_removed_without_acl_changes(self):
-        p = self.file(self.storage.documents / "task/.git/objects/pack/test.idx")
+        p = self.file(self.home / "sessions/task/.git/objects/pack/test.idx")
         p.chmod(stat.S_IREAD)
         self.assertEqual(cc.cleanup_all(self.storage), [])
         self.assertFalse(p.exists())
@@ -150,6 +151,45 @@ class CleanupTests(unittest.TestCase):
         self.assertTrue(any("Unsupported table" in e for e in cc.cleanup_all(self.storage)))
         self.assertEqual(self.rows(p, "threads"), [])
         self.assertEqual(self.rows(p, "new_history"), [("private",)])
+
+    def test_read_receipts_follow_selected_thread_then_full_cleanup(self):
+        p = self.db("state_5.sqlite", f"""
+            CREATE TABLE thread_read_receipts(thread_id TEXT PRIMARY KEY, first_unread_turn TEXT,
+                                              revision TEXT NOT NULL, last_published_turn TEXT);
+            INSERT INTO thread_read_receipts VALUES ('{T1}', NULL, '1', NULL), ('{T2}', NULL, '2', NULL);
+        """)
+        self.assertEqual(cc.delete_selected(self.storage, {T1}, []), [])
+        self.assertEqual([r[0] for r in self.rows(p, "thread_read_receipts")], [T2])
+        self.assertEqual(cc.cleanup_all(self.storage), [])
+        self.assertEqual(self.rows(p, "thread_read_receipts"), [])
+
+    def test_changed_read_receipts_schema_is_preserved(self):
+        p = self.db("state_5.sqlite", "CREATE TABLE thread_read_receipts(thread_id TEXT, extra TEXT); "
+                    "INSERT INTO thread_read_receipts VALUES ('task', 'KEEP');")
+        self.assertTrue(any("Unsupported table schema" in e for e in cc.cleanup_all(self.storage)))
+        self.assertEqual(self.rows(p, "thread_read_receipts"), [("task", "KEEP")])
+
+    def test_documents_records_cannot_be_selected_or_deleted(self):
+        external = self.file(self.storage.documents / "ComfyMCPDesktop/service.py", "KEEP")
+        rec = app.CleanRecord(app.PROVIDER_CODEX_DOCS, "external", "external", str(external), 0)
+        with patch.object(app, "codex_storage", return_value=self.storage), \
+             patch.object(app, "load_codex_records", return_value=[]), \
+             patch.object(app, "load_claude_records", side_effect=AssertionError("external provider")), \
+             patch.object(app, "load_codex_document_records", side_effect=AssertionError("external documents")):
+            self.assertEqual(app.load_records(), [])
+            count, errors = app.delete_selected_records([rec])
+        self.assertEqual(count, 0)
+        self.assertTrue(errors)
+        self.assertEqual(external.read_text(), "KEEP")
+
+    def test_external_configured_database_is_preserved(self):
+        self.storage.extra_db = self.root / "external-db"
+        self.storage.extra_db.mkdir()
+        p = self.storage.extra_db / "state_5.sqlite"
+        with closing(sqlite3.connect(p)) as con:
+            con.executescript("CREATE TABLE threads(id TEXT); INSERT INTO threads VALUES ('KEEP');")
+        self.assertTrue(any("Custom database location preserved" in e for e in cc.cleanup_all(self.storage)))
+        self.assertEqual(self.rows(p, "threads"), [("KEEP",)])
 
     def test_consolidation_progress_does_not_block_selected_or_full_cleanup(self):
         p = self.db("memories_1.sqlite", f"""
@@ -275,7 +315,7 @@ class CleanupTests(unittest.TestCase):
                 cc.delete_target(target, self.user, self.storage)
         self.assertTrue(p.exists())
 
-    def test_reject_file_symlink_without_touching_target(self):
+    def test_unlink_file_symlink_without_touching_target(self):
         target = self.file(self.root / "secret.txt", "KEEP")
         alias = self.home / "sessions/link"
         alias.parent.mkdir(parents=True)
@@ -283,11 +323,9 @@ class CleanupTests(unittest.TestCase):
             alias.symlink_to(target)
         except OSError:
             self.skipTest("File symlinks unavailable")
-        try:
-            self.assertTrue(cc.cleanup_all(self.storage))
-            self.assertEqual(target.read_text(), "KEEP")
-        finally:
-            alias.unlink()
+        self.assertEqual(cc.cleanup_all(self.storage), [])
+        self.assertFalse(alias.exists())
+        self.assertEqual(target.read_text(), "KEEP")
 
     def test_new_database_version_and_old_folder_are_discovered(self):
         self.state("state_99.sqlite")
@@ -336,9 +374,9 @@ class CleanupTests(unittest.TestCase):
         self.storage.extra_log = self.root / "mixed-folder"
         p = self.file(self.storage.extra_log / "important.txt", "KEEP")
         log = self.file(self.storage.extra_log / "codex.log")
-        self.assertEqual(cc.cleanup_all(self.storage, logs_only=True), [])
+        self.assertTrue(any("Custom log location preserved" in e for e in cc.cleanup_all(self.storage, logs_only=True)))
         self.assertTrue(p.exists())
-        self.assertFalse(log.exists())
+        self.assertTrue(log.exists())
 
     def test_process_probe_failure_is_not_assumed_stopped(self):
         with patch.object(app, "run_hidden", side_effect=OSError("probe unavailable")):
@@ -346,7 +384,7 @@ class CleanupTests(unittest.TestCase):
                 app.process_running("codex.exe")
 
     @unittest.skipUnless(os.name == "nt", "Windows junction semantics")
-    def test_junction_rejected_and_outside_target_untouched(self):
+    def test_junction_unlinked_and_outside_target_untouched(self):
         import subprocess
         target = self.file(self.root / "outside/keep.txt", "KEEP")
         link = self.home / "sessions"
@@ -354,23 +392,35 @@ class CleanupTests(unittest.TestCase):
         command = "New-Item -ItemType Junction -Path '" + str(link).replace("'", "''") + "' -Target '" + str(target.parent).replace("'", "''") + "' | Out-Null"
         subprocess.run(["powershell", "-NoProfile", "-Command", command], check=True,
                        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        try:
-            self.assertTrue(cc.cleanup_all(self.storage))
-            self.assertEqual(target.read_text(), "KEEP")
-        finally:
-            # rmdir unlinks the junction, not its target directory.
-            link.rmdir()
+        self.assertEqual(cc.cleanup_all(self.storage), [])
+        self.assertFalse(link.exists())
+        self.assertEqual(target.read_text(), "KEEP")
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction semantics")
+    def test_nested_junction_is_unlinked_and_cannot_be_traversed(self):
+        import subprocess
+        target = self.file(self.root / "outside/keep.txt", "KEEP")
+        link = self.home / "sessions/task/link"
+        link.parent.mkdir(parents=True)
+        command = "New-Item -ItemType Junction -Path '" + str(link).replace("'", "''") + "' -Target '" + str(target.parent).replace("'", "''") + "' | Out-Null"
+        subprocess.run(["powershell", "-NoProfile", "-Command", command], check=True,
+                       capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        with self.assertRaises(ValueError):
+            cc.remove_path(link / "keep.txt", self.home)
+        self.assertEqual(cc.cleanup_all(self.storage), [])
+        self.assertEqual(target.read_text(), "KEEP")
+        self.assertFalse(link.exists())
 
     def test_corrupt_global_json_reports_error_and_preserves_settings(self):
         p = self.file(self.home / ".codex-global-state.json", '{"settings":')
         self.assertTrue(cc.cleanup_all(self.storage))
         self.assertEqual(p.read_text(), '{"settings":')
 
-    def test_extra_db_root_supported(self):
+    def test_extra_db_root_preserved(self):
         self.storage.extra_db = self.home / "custom-sql"
         p = self.state("custom-sql/state_8.sqlite")
-        self.assertEqual(cc.cleanup_all(self.storage), [])
-        self.assertEqual(self.rows(p, "threads"), [])
+        self.assertTrue(any("Custom database location preserved" in e for e in cc.cleanup_all(self.storage)))
+        self.assertEqual(len(self.rows(p, "threads")), 2)
 
     def test_queue_memory_goal_wal_is_truncated(self):
         p = self.db("goals_1.sqlite", f"PRAGMA journal_mode=WAL; CREATE TABLE thread_goals(thread_id TEXT, objective TEXT); INSERT INTO thread_goals VALUES('{T1}','PRIVATE_SENTINEL_XYZ');")
@@ -393,14 +443,14 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(count, 0)
         self.assertTrue(errors)
 
-    def test_claude_full_cleanup_removes_orphan_history_preserves_config(self):
+    def test_claude_full_cleanup_preserves_history_and_config(self):
         history = self.file(self.user / ".claude/history.jsonl", '{"sessionId":"orphan","display":"private"}\n')
         cfg = self.file(self.user / ".claude.json", '{"oauthAccount":{"keep":"KEEP"}}')
         with patch.object(app, "home", return_value=self.user), patch.object(app, "codex_privacy_data_present", return_value=False), \
              patch.object(app, "claude_desktop_code_sessions_paths", return_value=[]):
             count, errors = app.clean_privacy_traces()
-        self.assertEqual((count, errors), (1, []))
-        self.assertEqual(history.read_text(), "")
+        self.assertEqual((count, errors), (0, []))
+        self.assertIn('orphan', history.read_text())
         self.assertEqual(json.loads(cfg.read_text()), {"oauthAccount": {"keep": "KEEP"}})
 
 

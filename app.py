@@ -13,7 +13,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.2.0"
 APP_NAME = f"AI Archive Cleaner {APP_VERSION}"
 
 COLOR_BG = "#171a1e"
@@ -59,7 +59,7 @@ STRINGS = {
         "running_apps": "対象アプリが起動中です。\n書き込み競合を避けるため、終了してから削除します。\n\n終了対象: {apps}\n\n終了して続行しますか？",
         "more_items": "...ほか {count} 件",
         "delete_common_confirm": "\n共通ログ/キャッシュも一緒に削除します。",
-        "delete_privacy_confirm": "\n選択に関係なくClaude/Codexのローカル履歴・旧DB・下書き・生成物・ログと、Codexのプロジェクト一覧を全削除します。\nCodex内部ブラウザーの履歴・Cookie・サイトのログイン情報も削除します。\nCodex本体のログイン、MCP・一般設定、スキル・プラグインは保持します。登録先の実プロジェクトは消しません。\nクラウド履歴・既存バックアップ・削除済み領域の復元対策は対象外です。",
+        "delete_privacy_confirm": "\n選択に関係なくCodexのローカル履歴・旧DB・下書き・専用保存領域の生成物・ログとプロジェクト一覧を削除します。\nCodex内部ブラウザーの履歴・Cookie・サイトのログイン情報も削除します。\nCodex本体のログイン、設定、外部プロジェクトやDocuments/Codexは保持します。\nクラウド履歴・既存バックアップ・削除済み領域の復元対策は対象外です。",
         "confirm_delete": "選択した {count} 件と、特定できる関連データを削除します。{common_text}\nバックアップは作りません。\n\n{titles}\n\n続行しますか？",
         "processed_warning": "チャット/生成物 {records} 件、共通痕跡 {common} グループ、全削除 {privacy} グループの完了を確認しました。\n一部が未完了です。部分的に削除済みの項目もあります。\n\n{errors}",
         "processed_info": "チャット/生成物 {records} 件、共通痕跡 {common} グループ、全削除 {privacy} グループの完了を確認しました。",
@@ -115,7 +115,7 @@ STRINGS = {
         "running_apps": "Target apps are running.\nThey will be closed before deletion to avoid write conflicts.\n\nApps to close: {apps}\n\nClose them and continue?",
         "more_items": "...and {count} more",
         "delete_common_confirm": "\nShared logs/cache will also be deleted.",
-        "delete_privacy_confirm": "\nDelete ALL local Claude/Codex history, legacy databases, drafts, artifacts, logs, and Codex project lists regardless of selection.\nAlso erase Codex internal browser history, cookies, and website logins.\nPreserve Codex app authentication, MCP/general settings, skills, plugins, and actual project repositories.\nCloud history, existing backups, and recovery from deallocated disk space are outside this operation.",
+        "delete_privacy_confirm": "\nDelete local Codex history, legacy databases, drafts, artifacts in dedicated storage, logs, and project lists regardless of selection.\nAlso erase Codex internal browser history, cookies, and website logins.\nPreserve app authentication, settings, external projects, and Documents/Codex.\nCloud history, existing backups, and recovery from deallocated disk space are outside this operation.",
         "confirm_delete": "Delete {count} selected item(s) and identifiable related data.{common_text}\nNo backup will be created.\n\n{titles}\n\nContinue?",
         "processed_warning": "Confirmed completion: {records} chat/artifact item(s), {common} shared cleanup group(s), and {privacy} full cleanup group(s).\nSome operations are incomplete and may already be partially deleted.\n\n{errors}",
         "processed_info": "Confirmed completion: {records} chat/artifact item(s), {common} shared cleanup group(s), and {privacy} full cleanup group(s).",
@@ -453,10 +453,6 @@ def validate_record_path(record: CleanRecord) -> Path:
     target = safe_resolve(Path(record.path))
     if record.provider == PROVIDER_CODEX:
         roots = [codex_sessions_path(), codex_archived_sessions_path()]
-    elif record.provider == PROVIDER_CODEX_DOCS:
-        roots = [codex_documents_path()]
-    elif record.provider == PROVIDER_CLAUDE:
-        roots = [claude_projects_path()]
     else:
         roots = []
 
@@ -638,8 +634,6 @@ def load_codex_document_records() -> list[CleanRecord]:
 
 def load_records() -> list[CleanRecord]:
     records = load_codex_records()
-    records.extend(load_claude_records())
-    records.extend(load_codex_document_records())
     records.sort(key=lambda item: item.updated_at, reverse=True)
     return records
 
@@ -862,14 +856,6 @@ def delete_selected_records(records: list[CleanRecord]) -> tuple[int, list[str]]
         )
         errors.extend(desktop_errors)
 
-    for root in [
-        codex_sessions_path(),
-        codex_archived_sessions_path(),
-        codex_documents_path(),
-        claude_projects_path(),
-    ]:
-        cleanup_empty_dirs(root)
-
     for record in deleted:
         try:
             if Path(record.path).exists():
@@ -967,57 +953,18 @@ def is_protected_common_path(path: Path) -> bool:
 
 def common_targets() -> list[CommonTarget]:
     codex = codex_home()
-    claude = claude_home()
-    local = appdata_local()
-    targets = [
-        CommonTarget("Codex Desktop / CLI logs & cache", codex, "codex_shared"),
-        CommonTarget(tr("common_claude_session_env"), claude / "session-env", "contents"),
-        CommonTarget(tr("common_claude_shell_snapshots"), claude / "shell-snapshots", "contents"),
-        CommonTarget(tr("common_claude_cli_node_cache"), local / "claude-cli-nodejs" / "Cache", "contents"),
-        CommonTarget(tr("common_claude_native_host_logs"), local / "Claude" / "Logs", "contents"),
-    ]
-    for name in [
-        "Cache",
-        "Code Cache",
-        "Crashpad",
-        "DawnGraphiteCache",
-        "DawnWebGPUCache",
-        "GPUCache",
-        "sentry",
-        "Shared Dictionary",
-        "logs",
-    ]:
-        for desktop_root in claude_desktop_data_paths():
-            targets.append(CommonTarget(tr("common_claude_desktop", name=name), desktop_root / name, "contents"))
+    targets = [CommonTarget("Codex Desktop / CLI logs & cache", codex, "codex_shared")]
     return [target for target in targets if target.path.exists()]
 
 
 def privacy_target_count() -> int:
-    return int(claude_privacy_data_present()) + int(codex_privacy_data_present())
+    return int(codex_privacy_data_present())
 
 
 def clean_privacy_traces() -> tuple[int, list[str]]:
     """Remove local AI history data while preserving authentication and app configuration."""
     errors = []
     cleaned = 0
-
-    if claude_privacy_data_present():
-        try:
-            truncate_file(claude_history_path())
-            for path in [claude_json_path(), home() / ".claude.json.backup"]:
-                clean_claude_session_metadata(path)
-            delete_dir_contents(claude_projects_path())
-            cleanup_empty_dirs(claude_projects_path())
-            for path in claude_desktop_code_sessions_paths():
-                delete_dir_contents(path)
-                cleanup_empty_dirs(path)
-        except Exception as exc:
-            errors.append(f"{tr('privacy_claude')}: {exc}")
-        else:
-            if claude_privacy_data_present():
-                errors.append(tr("privacy_remaining", name=tr("privacy_claude")))
-            else:
-                cleaned += 1
 
     if codex_privacy_data_present():
         try:
@@ -1594,7 +1541,7 @@ class App(tk.Tk):
         try:
             codex_desktop_pids = codex_desktop_process_ids()
             running_images = [
-                name for name in ["codex.exe", "Claude.exe", "claude.exe"] if process_running(name)
+                name for name in ["codex.exe"] if process_running(name)
             ]
         except Exception as exc:
             messagebox.showerror(APP_NAME, str(exc))
