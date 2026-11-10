@@ -3,6 +3,7 @@ import codex_cleanup as cc
 import locale
 import os
 import sqlite3
+import stat
 import subprocess
 import time
 import tkinter as tk
@@ -13,7 +14,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 APP_NAME = f"AI Archive Cleaner {APP_VERSION}"
 
 COLOR_BG = "#171a1e"
@@ -44,7 +45,7 @@ STRINGS = {
         "check_all": "全チェック",
         "uncheck_all": "全解除",
         "delete_common": "共通ログ/キャッシュも一緒に消す",
-        "delete_privacy": "履歴・プロジェクト一覧・Codex内部ブラウザーも全削除",
+        "delete_privacy": "ローカル履歴とプロジェクト一覧を全削除",
         "search": "検索",
         "kind": "種類",
         "title": "タイトル",
@@ -59,8 +60,8 @@ STRINGS = {
         "running_apps": "対象アプリが起動中です。\n書き込み競合を避けるため、終了してから削除します。\n\n終了対象: {apps}\n\n終了して続行しますか？",
         "more_items": "...ほか {count} 件",
         "delete_common_confirm": "\n共通ログ/キャッシュも一緒に削除します。",
-        "delete_privacy_confirm": "\n選択に関係なくCodexのローカル履歴・旧DB・下書き・専用保存領域の生成物・ログとプロジェクト一覧を削除します。\nCodex内部ブラウザーの履歴・Cookie・サイトのログイン情報も削除します。\nCodex本体のログイン、設定、外部プロジェクトやDocuments/Codexは保持します。\nクラウド履歴・既存バックアップ・削除済み領域の復元対策は対象外です。",
-        "confirm_delete": "選択した {count} 件と、特定できる関連データを削除します。{common_text}\nバックアップは作りません。\n\n{titles}\n\n続行しますか？",
+        "delete_privacy_confirm": "\n選択に関係なく対応するCodexのローカル履歴・下書き・生成物・ログとプロジェクト一覧を削除します。\nDocuments/Codexでは、IDで対応付けられたプロジェクト未指定チャットのフォルダーも削除します。\n実プロジェクト、Codex本体と内部ブラウザーのログイン情報は保持します。\nクラウド履歴・既存バックアップ・削除済み領域の復元対策は対象外です。",
+        "confirm_delete": "選択した {count} 件と、チャットIDで特定できる関連データを削除します。Documents/Codexの対応するチャット用フォルダーも対象です。{common_text}\n所有者を特定できないデータは残ります。バックアップは作りません。\n\n{titles}\n\n続行しますか？",
         "processed_warning": "チャット/生成物 {records} 件、共通痕跡 {common} グループ、全削除 {privacy} グループの完了を確認しました。\n一部が未完了です。部分的に削除済みの項目もあります。\n\n{errors}",
         "processed_info": "チャット/生成物 {records} 件、共通痕跡 {common} グループ、全削除 {privacy} グループの完了を確認しました。",
         "stop_process_failed": "対象アプリを終了できませんでした。手動で終了してから再実行してください。",
@@ -100,7 +101,7 @@ STRINGS = {
         "check_all": "Check all",
         "uncheck_all": "Clear all",
         "delete_common": "Also delete shared logs/cache",
-        "delete_privacy": "Delete all history, project lists, and Codex internal browser data",
+        "delete_privacy": "Delete all local history and project lists",
         "search": "Search",
         "kind": "Type",
         "title": "Title",
@@ -115,8 +116,8 @@ STRINGS = {
         "running_apps": "Target apps are running.\nThey will be closed before deletion to avoid write conflicts.\n\nApps to close: {apps}\n\nClose them and continue?",
         "more_items": "...and {count} more",
         "delete_common_confirm": "\nShared logs/cache will also be deleted.",
-        "delete_privacy_confirm": "\nDelete local Codex history, legacy databases, drafts, artifacts in dedicated storage, logs, and project lists regardless of selection.\nAlso erase Codex internal browser history, cookies, and website logins.\nPreserve app authentication, settings, external projects, and Documents/Codex.\nCloud history, existing backups, and recovery from deallocated disk space are outside this operation.",
-        "confirm_delete": "Delete {count} selected item(s) and identifiable related data.{common_text}\nNo backup will be created.\n\n{titles}\n\nContinue?",
+        "delete_privacy_confirm": "\nDelete supported local Codex history, drafts, artifacts, logs, and project lists regardless of selection.\nDelete ID-mapped projectless chat folders in Documents/Codex.\nPreserve actual projects and app and internal browser login data.\nCloud history, existing backups, and recovery from deallocated disk space are outside this operation.",
+        "confirm_delete": "Delete {count} selected item(s) and related data identifiable by chat ID, including mapped chat folders in Documents/Codex.{common_text}\nData whose owner cannot be identified remains. No backup will be created.\n\n{titles}\n\nContinue?",
         "processed_warning": "Confirmed completion: {records} chat/artifact item(s), {common} shared cleanup group(s), and {privacy} full cleanup group(s).\nSome operations are incomplete and may already be partially deleted.\n\n{errors}",
         "processed_info": "Confirmed completion: {records} chat/artifact item(s), {common} shared cleanup group(s), and {privacy} full cleanup group(s).",
         "stop_process_failed": "Could not close the target apps. Close them manually and run again.",
@@ -208,7 +209,7 @@ class CleanRecord:
         if not path.exists():
             return tr("none")
         try:
-            size = folder_size(path) if path.is_dir() else path.stat().st_size
+            size = path_size(path)
         except OSError:
             return tr("size_failed")
         return format_size(size)
@@ -251,17 +252,22 @@ CLAUDE_SESSION_METADATA_KEYS = frozenset(
 
 def folder_size(path: Path) -> int:
     total = 0
-    try:
-        items = path.rglob("*")
-    except OSError:
-        return 0
-    for item in items:
-        if item.is_file():
+    for base, dirs, files in os.walk(path, followlinks=False):
+        for name in dirs + files:
             try:
-                total += item.stat().st_size
+                info = (Path(base) / name).lstat()
+                if stat.S_ISREG(info.st_mode) and not getattr(info, "st_file_attributes", 0) & 1024:
+                    total += info.st_size
             except OSError:
                 pass
     return total
+
+
+def path_size(path: Path) -> int:
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 1024:
+        return info.st_size
+    return folder_size(path) if stat.S_ISDIR(info.st_mode) else info.st_size
 
 
 def format_size(size: int) -> str:
@@ -609,12 +615,13 @@ def load_claude_records() -> list[CleanRecord]:
 
 def load_codex_document_records() -> list[CleanRecord]:
     root = codex_documents_path()
+    cc.reject_links(cc.lexical(root))
     if not root.exists():
         return []
     records = []
     for path in root.iterdir():
         try:
-            stat = path.stat()
+            stat = path.lstat()
         except OSError:
             continue
         records.append(
@@ -1256,7 +1263,7 @@ class App(tk.Tk):
         if column == "size":
             path = Path(record.path)
             try:
-                return folder_size(path) if path.is_dir() else path.stat().st_size
+                return path_size(path)
             except OSError:
                 return -1
         if column == "status":

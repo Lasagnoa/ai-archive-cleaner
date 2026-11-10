@@ -93,12 +93,15 @@ class CleanupTests(unittest.TestCase):
             self.file(self.home / name / "data.json", "private")
         for name in cc.HISTORY_FILES:
             self.file(self.home / name, "private")
-        outside = self.file(self.storage.documents / "2026/task/output.json", "KEEP")
+        artifact = self.file(self.storage.documents / "2026/task/output.json", "KEEP")
         temp = self.file(self.home / "..codex-global-state.json.tmp-old", "partial private JSON")
-        browser_files = [self.file(self.desktop / p, "browser secret") for p in (
+        browser_logins = [self.file(self.desktop / p, "KEEP LOGIN") for p in (
             "Partitions/codex-browser-app/Network/Cookies", "web/Codex/codex-browser-app/Login Data",
-            "web/Codex/codex-browser-app/Local Storage/data", "web/Codex/browser-sidebar-page-states.json",
-            "Cache/cache", "web/Codex/Default/History")]
+            "web/Codex/codex-browser-app/Local Storage/data", "Partitions/codex-browser-app/Session Storage/token",
+            "web/Codex/Default/IndexedDB/token")]
+        browser_files = [self.file(self.desktop / p, "browser history") for p in (
+            "Partitions/codex-browser-app/History", "web/Codex/codex-browser-app/Cache/data",
+            "web/Codex/browser-sidebar-page-states.json", "Cache/cache", "web/Codex/Default/History")]
         errors = cc.cleanup_all(self.storage)
         self.assertEqual(errors, [])
         self.assertEqual(cc.inspect_remaining(self.storage), [])
@@ -109,7 +112,8 @@ class CleanupTests(unittest.TestCase):
             self.assertEqual(self.rows(p, "remote_control_enrollments"), [("KEEP",)])
         self.assertEqual(self.rows(hist, "thread_items"), [])
         self.assertFalse(temp.exists())
-        self.assertEqual(outside.read_text(), "KEEP")
+        self.assertEqual(artifact.read_text(), "KEEP")
+        self.assertTrue(all(p.read_text() == "KEEP LOGIN" for p in browser_logins))
         self.assertTrue(all(not p.exists() for p in browser_files))
         self.assertEqual({p: hashlib.sha256(p.read_bytes()).hexdigest() for p in protected}, hashes)
         after = json.loads((self.home / ".codex-global-state.json").read_text())
@@ -169,18 +173,41 @@ class CleanupTests(unittest.TestCase):
         self.assertTrue(any("Unsupported table schema" in e for e in cc.cleanup_all(self.storage)))
         self.assertEqual(self.rows(p, "thread_read_receipts"), [("task", "KEEP")])
 
-    def test_documents_records_cannot_be_selected_or_deleted(self):
-        external = self.file(self.storage.documents / "ComfyMCPDesktop/service.py", "KEEP")
-        rec = app.CleanRecord(app.PROVIDER_CODEX_DOCS, "external", "external", str(external), 0)
+    def test_documents_entries_are_not_selectable_or_deleted(self):
+        selected = self.file(self.storage.documents / "task/output.json", "private")
+        other = self.file(self.storage.documents / "other/output.json", "KEEP")
+        external = self.file(self.root / "outside/service.py", "KEEP")
         with patch.object(app, "codex_storage", return_value=self.storage), \
-             patch.object(app, "load_codex_records", return_value=[]), \
-             patch.object(app, "load_claude_records", side_effect=AssertionError("external provider")), \
-             patch.object(app, "load_codex_document_records", side_effect=AssertionError("external documents")):
+             patch.object(app, "load_codex_records", return_value=[]):
             self.assertEqual(app.load_records(), [])
+            rec = app.CleanRecord(app.PROVIDER_CODEX_DOCS, "task", "task", str(selected.parent), 0)
             count, errors = app.delete_selected_records([rec])
-        self.assertEqual(count, 0)
-        self.assertTrue(errors)
+            self.assertEqual(count, 0)
+            self.assertTrue(errors)
+            bad = app.CleanRecord(app.PROVIDER_CODEX_DOCS, "external", "external", str(external), 0)
+            count, errors = app.delete_selected_records([bad])
+            self.assertEqual(count, 0)
+            self.assertTrue(errors)
+        self.assertEqual(selected.read_text(), "private")
+        self.assertEqual(other.read_text(), "KEEP")
         self.assertEqual(external.read_text(), "KEEP")
+
+    def test_empty_documents_folder_is_preserved(self):
+        self.storage.documents.mkdir(parents=True)
+        self.assertEqual(cc.cleanup_all(self.storage), [])
+        self.assertTrue(self.storage.documents.exists())
+
+    def test_documents_link_and_target_are_preserved(self):
+        outside = self.file(self.root / "outside/keep.txt", "KEEP")
+        self.storage.documents.mkdir(parents=True)
+        link = self.storage.documents / "linked"
+        try:
+            link.symlink_to(outside.parent, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"Cannot create symlink: {exc}")
+        self.assertEqual(cc.cleanup_all(self.storage), [])
+        self.assertEqual(outside.read_text(), "KEEP")
+        self.assertTrue(link.is_symlink())
 
     def test_external_configured_database_is_preserved(self):
         self.storage.extra_db = self.root / "external-db"
@@ -262,6 +289,74 @@ class CleanupTests(unittest.TestCase):
         data = json.loads((self.home / ".codex-global-state.json.bak").read_text())
         self.assertIn("local-projects", data)
         self.assertEqual(data["electron-persisted-atom-state"]["thread-descriptions-v1"], {T2: "other summary"})
+
+    def test_selected_removes_duplicate_transcripts_and_owned_snapshots(self):
+        first = self.file(self.home / "sessions/2026" / f"rollout-{T1}.jsonl")
+        duplicate = self.file(self.home / "archived_sessions" / f"rollout-{T1}.jsonl")
+        other = self.file(self.home / "sessions/2026" / f"rollout-{T2}.jsonl")
+        snapshot = self.file(self.home / "shell_snapshots" / f"{T1}.sh")
+        self.assertEqual(cc.delete_selected(self.storage, {T1}, [str(first)]), [])
+        self.assertFalse(first.exists())
+        self.assertFalse(duplicate.exists())
+        self.assertFalse(snapshot.exists())
+        self.assertTrue(other.exists())
+
+    def test_projectless_output_is_deleted_for_selected_chat(self):
+        output = self.storage.documents / "2026-11-10/example/outputs"
+        artifact = self.file(output / "report.txt")
+        scratch = self.file(output.parent / "work/draft.txt")
+        other = self.file(self.storage.documents / "2026-11-10/other/outputs/keep.txt", "KEEP")
+        self.file(self.home / ".codex-global-state.json", json.dumps({
+            "thread-projectless-output-directories": {T1: str(output), T2: str(other.parent)}
+        }))
+        self.assertEqual(cc.delete_selected(self.storage, {T1}, []), [])
+        self.assertFalse(artifact.exists())
+        self.assertFalse(scratch.exists())
+        self.assertEqual(other.read_text(), "KEEP")
+
+    def test_projectless_project_and_shared_paths_are_preserved(self):
+        output = self.storage.documents / "2026-11-10/example/outputs"
+        artifact = self.file(output / "report.txt", "KEEP")
+        state = self.home / ".codex-global-state.json"
+        self.file(state, json.dumps({"thread-projectless-output-directories": {T1: str(output), T2: str(output)}}))
+        self.assertTrue(cc.delete_selected(self.storage, {T1}, []))
+        self.assertEqual(artifact.read_text(), "KEEP")
+        self.file(state, json.dumps({"thread-projectless-output-directories": {T1: str(output)},
+                                     "local-projects": {"p": {"rootPaths": [str(output.parent)]}}}))
+        self.assertTrue(cc.cleanup_all(self.storage))
+        self.assertEqual(artifact.read_text(), "KEEP")
+        self.assertIn(T1, json.loads(state.read_text())["thread-projectless-output-directories"])
+
+    def test_projectless_git_repository_is_preserved(self):
+        output = self.storage.documents / "2026-11-10/example/outputs"
+        artifact = self.file(output / "report.txt", "KEEP")
+        self.file(output.parent / ".git/config", "KEEP")
+        self.file(self.home / ".codex-global-state.json", json.dumps({
+            "thread-projectless-output-directories": {T1: str(output)}
+        }))
+        self.assertTrue(cc.delete_selected(self.storage, {T1}, []))
+        self.assertEqual(artifact.read_text(), "KEEP")
+
+    def test_full_cleanup_removes_mapped_projectless_output(self):
+        output = self.storage.documents / "2026-11-10/example/outputs"
+        artifact = self.file(output / "report.txt")
+        self.file(self.home / ".codex-global-state.json", json.dumps({
+            "thread-projectless-output-directories": {T1: str(output)}
+        }))
+        self.assertEqual(cc.cleanup_all(self.storage), [])
+        self.assertFalse(artifact.exists())
+
+    def test_selected_reports_owned_item_still_present(self):
+        owned = self.file(self.home / "visualizations" / T1 / "image.png")
+        original = cc.delete_target
+        def leave_artifact(path, root, storage):
+            if path == owned.parent:
+                return
+            return original(path, root, storage)
+        with patch.object(cc, "delete_target", side_effect=leave_artifact):
+            errors = cc.delete_selected(self.storage, {T1}, [])
+        self.assertTrue(any("Remaining owned item" in e for e in errors))
+        self.assertTrue(owned.exists())
 
     def test_selected_database_error_preserves_rollout_for_retry(self):
         self.state()

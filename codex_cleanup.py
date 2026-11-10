@@ -48,6 +48,8 @@ HISTORY_DIRS = (
 )
 HISTORY_FILES = ("history.jsonl", "session_index.jsonl", "transcription-history.jsonl",
                  "realtime-voice-continuity.json", "process_manager/chat_processes.json")
+OWNED_DIRS = ("attachments", "generated_images", "visualizations", "computer-use-turn-ended",
+              "shell_snapshots", "shell-snapshots")
 
 
 def lexical(path: Path) -> Path:
@@ -451,6 +453,81 @@ def global_files(storage):
             if (storage.home / n).exists()]
 
 
+def projectless_outputs(storage, ids):
+    """Find explicitly mapped projectless outputs, rejecting ambiguous ownership."""
+    mappings = {}
+    project_paths = []
+    def collect_paths(value):
+        if isinstance(value, str) and Path(value).is_absolute():
+            project_paths.append(lexical(Path(value)))
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                collect_paths(key)
+                collect_paths(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect_paths(item)
+    for path in global_files(storage):
+        reject_links(path)
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        if not isinstance(data, dict):
+            raise ValueError(f"JSON root must be an object: {path}")
+        for obj in (data, data.get("electron-persisted-atom-state", {})):
+            if not isinstance(obj, dict):
+                continue
+            for key in PROJECT_KEYS:
+                if key in obj:
+                    collect_paths(obj[key])
+            value = obj.get("thread-projectless-output-directories", {})
+            if not isinstance(value, dict):
+                raise ValueError(f"Unsupported projectless output mapping: {path}")
+            for tid, name in value.items():
+                if isinstance(name, str) and name:
+                    mappings.setdefault(tid, set()).add(lexical(Path(name)))
+    for db in databases(storage):
+        if family(db) != "state":
+            continue
+        con = connect(db)
+        try:
+            cols = schema(con).get("threads", set())
+            if {"id", "cwd"} <= cols:
+                for tid, cwd in con.execute("select id,cwd from threads where cwd is not null"):
+                    selected_ids = mappings if ids is None else ids
+                    if tid not in selected_ids and isinstance(cwd, str) and Path(cwd).is_absolute():
+                        project_paths.append(lexical(Path(cwd)))
+        finally:
+            con.close()
+    root = lexical(storage.documents)
+    targets = []
+    for tid in (mappings if ids is None else ids):
+        values = mappings.get(tid, set())
+        if len(values) > 1:
+            raise ValueError(f"Conflicting projectless output paths for {tid}")
+        for output in values:
+            if not beneath(output, root) or output == root:
+                raise ValueError(f"Projectless output outside Documents/Codex (preserved): {output}")
+            rel = output.relative_to(root)
+            if len(rel.parts) not in (2, 3) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", rel.parts[0]) or (len(rel.parts) == 3 and rel.parts[2] != "outputs"):
+                raise ValueError(f"Unsupported projectless output path (preserved): {output}")
+            target = root / rel.parts[0] / rel.parts[1]
+            if any(other != tid and any(beneath(p, target) or beneath(target, p) for p in paths)
+                   for other, paths in mappings.items()):
+                raise ValueError(f"Projectless output shared by another chat (preserved): {target}")
+            if any(beneath(p, target) or beneath(target, p) for p in project_paths):
+                raise ValueError(f"Project or another chat overlaps projectless output (preserved): {target}")
+            checked(target, root)
+            # A generated directory may later become an actual repository.
+            for ancestor in (root, target.parent, target):
+                if os.path.lexists(ancestor / ".git"):
+                    raise ValueError(f"Repository overlaps projectless output (preserved): {target}")
+            if target.exists():
+                for base, dirs, files in os.walk(target, followlinks=False, onerror=lambda e: (_ for _ in ()).throw(e)):
+                    if ".git" in dirs or ".git" in files:
+                        raise ValueError(f"Repository inside projectless output (preserved): {target}")
+            targets.append((target, root))
+    return list(dict.fromkeys(targets))
+
+
 def full_targets(storage):
     targets = [(storage.home / n, storage.home) for n in HISTORY_DIRS + HISTORY_FILES]
     if storage.home.exists():
@@ -458,18 +535,21 @@ def full_targets(storage):
                     for p in storage.home.glob(pattern)]
     targets += common_file_targets(storage)
     for desktop in storage.desktops():
-        # The app's Default profile / Cookies / Local Storage may own app auth.
-        # Only Codex browser partitions are reset, not the app's whole userData.
+        # Browser partitions may contain website logins. Remove only known history
+        # and caches, never whole partitions or their authentication stores.
         for parent in [desktop / "Partitions", desktop / "web/Codex"]:
             reject_links(parent)
             if parent.exists():
-                targets += [(p, desktop) for p in parent.iterdir()
-                            if p.name.startswith("codex-browser-")]
+                for partition in parent.iterdir():
+                    if partition.name.startswith("codex-browser-"):
+                        reject_links(partition)
+                        for name in CACHE_DIRS + ("History", "History-journal", "Top Sites", "Top Sites-journal", "Sessions"):
+                            targets.append((partition / name, desktop))
         for name in ("browser-sidebar-page-states.json", "web/Codex/browser-sidebar-page-states.json"):
             targets.append((desktop / name, desktop))
         # Cache/history in the host profile can be discarded without deleting its cookies/settings.
         web = desktop / "web/Codex"
-        for name in CACHE_DIRS + ("History", "History-journal", "Top Sites", "Top Sites-journal", "Sessions", "Session Storage"):
+        for name in CACHE_DIRS + ("History", "History-journal", "Top Sites", "Top Sites-journal", "Sessions"):
             targets.append((web / "Default" / name, desktop))
         for name in CACHE_DIRS:
             targets.append((web / name, desktop))
@@ -492,8 +572,14 @@ def protected(storage):
               "plugins", "skills", "pets", "browser", ".sandbox-secrets", ".sandbox-bin", "automations")]
     for desktop in storage.desktops():
         paths += [desktop / n for n in ("Local State", "Preferences", "Network", "Local Storage")]
-        paths += [desktop / "web/Codex/Default" / n for n in ("Network", "Local Storage", "Preferences", "Login Data")]
+        paths += [desktop / "web/Codex/Default" / n for n in ("Network", "Local Storage", "Session Storage", "IndexedDB", "Preferences", "Login Data")]
         paths.append(desktop / "web/Codex/Local State")
+        for parent in (desktop / "Partitions", desktop / "web/Codex"):
+            reject_links(parent)
+            if parent.exists():
+                for partition in parent.iterdir():
+                    if partition.name.startswith("codex-browser-"):
+                        paths += [partition / n for n in ("Network", "Cookies", "Local Storage", "Session Storage", "IndexedDB", "Preferences", "Login Data", "Local State")]
     return [lexical(p) for p in paths]
 
 
@@ -545,6 +631,16 @@ def inspect_remaining(storage, ids=None, *, logs_only=False):
 def cleanup_all(storage, *, logs_only=False):
     result = Result()
     result.errors.extend(preserved_configured_paths(storage, logs_only=logs_only))
+    outputs_ok = True
+    if not logs_only:
+        outputs = result.step("Projectless output discovery", lambda: projectless_outputs(storage, None))
+        outputs_ok = outputs is not None
+        for target, root in outputs or []:
+            before = len(result.errors)
+            result.step(str(target), lambda p=target, r=root: delete_target(p, r, storage))
+            if os.path.lexists(target):
+                result.errors.append(f"Remaining projectless output: {target}")
+            outputs_ok = outputs_ok and len(result.errors) == before
     paths = result.step("Database discovery", lambda: databases(storage)) or []
     for path in paths:
         pending = result.step(str(path), lambda p=path: database_rows(p, clean=True, logs_only=logs_only))
@@ -552,7 +648,7 @@ def cleanup_all(storage, *, logs_only=False):
     targets = result.step("File discovery", lambda: common_file_targets(storage) if logs_only else full_targets(storage)) or []
     for path, root in targets:
         result.step(str(path), lambda p=path, r=root: delete_target(p, r, storage))
-    if not logs_only:
+    if not logs_only and outputs_ok:
         for path in global_files(storage):
             result.step(str(path), lambda p=path: rewrite_json(p, storage.home, cleaned_global))
     remaining = result.step("Verification", lambda: inspect_remaining(storage, logs_only=logs_only))
@@ -645,10 +741,29 @@ def delete_selected(storage, ids: set[str], rollout_paths: list[str]):
             paths.append((p, root))
     if result.errors:
         return result.errors
+    owned_outputs = result.step("Projectless output discovery", lambda: projectless_outputs(storage, ids)) or []
+    if result.errors:
+        return result.errors
+    # A thread may have multiple transcript copies across the two directories.
+    for root in (storage.home / "sessions", storage.home / "archived_sessions"):
+        def find_transcripts(root=root):
+            for p in files_under(root):
+                if p.suffix == ".jsonl" and contains_id(p.name, ids):
+                    if not any(lexical(p) == lexical(existing) for existing, _ in paths):
+                        paths.append((p, root))
+        result.step(str(root), find_transcripts)
+    if result.errors:
+        return result.errors
     for path in databases(storage):
         pending = result.step(str(path), lambda p=path: database_rows(p, ids, clean=True))
         result.errors.extend(pending or [])
     # Keep transcript files available for retry if database cleanup failed.
+    if result.errors:
+        return result.errors
+    for target, root in owned_outputs:
+        result.step(str(target), lambda p=target, r=root: delete_target(p, r, storage))
+        if os.path.lexists(target):
+            result.errors.append(f"Remaining projectless output: {target}")
     if result.errors:
         return result.errors
     for name, field in [("history.jsonl", "session_id"), ("session_index.jsonl", "id")]:
@@ -658,7 +773,7 @@ def delete_selected(storage, ids: set[str], rollout_paths: list[str]):
     for path in global_files(storage):
         result.step(str(path), lambda p=path: rewrite_json(p, storage.home, lambda d: cleaned_global(d, ids)))
     # Only explicit task-named directories/files: never infer ownership from cwd.
-    for name in ("attachments", "generated_images", "visualizations", "computer-use-turn-ended"):
+    for name in OWNED_DIRS:
         root = storage.home / name
         if root.exists():
             def prune_owned(root=root):
@@ -671,6 +786,17 @@ def delete_selected(storage, ids: set[str], rollout_paths: list[str]):
                             if child in dirs:
                                 dirs.remove(child)
             result.step(str(root), prune_owned)
+    # Verification must inspect the same owned paths, including empty directories.
+    for name in OWNED_DIRS:
+        root = storage.home / name
+        if root.exists():
+            def verify_owned(root=root):
+                reject_links(root)
+                for base, dirs, files in os.walk(root, followlinks=False):
+                    for child in dirs + files:
+                        if contains_id(child, ids):
+                            result.errors.append(f"Remaining owned item: {Path(base) / child}")
+            result.step(str(root), verify_owned)
     if not result.errors:
         for path, root in paths:
             result.step(str(path), lambda p=path, r=root: remove_path(p, r))
