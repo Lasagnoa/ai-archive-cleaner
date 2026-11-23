@@ -14,7 +14,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 APP_NAME = f"AI Archive Cleaner {APP_VERSION}"
 
 COLOR_BG = "#171a1e"

@@ -250,7 +250,8 @@ RULES = {
         "thread_goals": ("thread_id",), "stage1_outputs": ("thread_id",),
         "thread_spawn_edges": ("parent_thread_id", "child_thread_id"),
         "agent_job_items": ("assigned_thread_id",), "agent_jobs": (),
-        "thread_artifacts": ("thread_id",), "thread_read_receipts": ("thread_id",), "projects": (), "project_roots": (),
+        "thread_artifacts": ("thread_id",), "thread_attachments": ("thread_id",),
+        "thread_read_receipts": ("thread_id",), "projects": (), "project_roots": (),
         "project_idempotency_keys": (), "rollout_migration_skipped_rollouts": (),
     },
     "thread_history": {"thread_turns": ("thread_id",), "thread_items": ("thread_id",),
@@ -263,6 +264,7 @@ RULES = {
         "local_thread_catalog": ("thread_id",), "thread_timeline_ledger": ("thread_id",),
         "local_thread_catalog_scan_entries": ("thread_id",),
         "local_thread_catalog_sync_state": (), "local_thread_catalog_scan_checkpoints": (),
+        "local_thread_catalog_history_coverage": (),
         "inbox_items": ("thread_id",), "automation_runs": ("thread_id",),
     },
     "summaries": {"thread_turn_summaries": ("thread_id",)},
@@ -272,6 +274,19 @@ SAFE_TABLES = {
     "remote_control_enrollments", "external_agent_config_imports", "thread_sections",
     "codex_schema_migrations", "automations", "local_app_server_feature_enablement",
     "local_thread_catalog_metadata", "local_thread_catalog_hosts",
+}
+
+# Column name, declared type, NOT NULL, default and position in the primary key.
+HISTORY_TABLE_COLUMNS = {
+    ("state", "thread_attachments"): {
+        ("id", "TEXT", 0, None, 1), ("thread_id", "TEXT", 1, None, 0),
+        ("attachment_type", "TEXT", 1, None, 0), ("identity_key", "TEXT", 1, None, 0),
+        ("payload", "TEXT", 1, None, 0), ("created_at", "INTEGER", 1, None, 0),
+    },
+    ("catalog", "local_thread_catalog_history_coverage"): {
+        ("host_id", "TEXT", 1, None, 1), ("scope", "TEXT", 1, None, 2),
+        ("cursor", "TEXT", 0, None, 0), ("complete", "INTEGER", 1, "0", 0),
+    },
 }
 
 
@@ -310,6 +325,26 @@ def schema(con):
             for (name,) in con.execute("select name from sqlite_master where type='table'").fetchall()}
 
 
+def supported_table_schema(con, kind, table, columns):
+    if kind == "state" and table == "thread_read_receipts":
+        return columns == {"thread_id", "first_unread_turn", "revision", "last_published_turn"}
+    expected = HISTORY_TABLE_COLUMNS.get((kind, table))
+    if expected is None:
+        return True
+    actual = set()
+    for _, name, sql_type, required, default, pk, hidden in con.execute(f"pragma table_xinfo({quote(table)})"):
+        if hidden:
+            return False
+        actual.add((name, sql_type, required, default, pk))
+    if actual != expected:
+        return False
+    foreign_keys = con.execute('select "table", "from", "to", on_update, on_delete '
+                               'from pragma_foreign_key_list(?)', (table,)).fetchall()
+    if table == "thread_attachments":
+        return foreign_keys == [("threads", "thread_id", "id", "NO ACTION", "CASCADE")]
+    return not foreign_keys
+
+
 def predicates(kind, table, columns, ids):
     parts, params = [], []
     id_columns = RULES[kind][table]
@@ -343,16 +378,16 @@ def database_rows(path: Path, ids=None, *, clean=False, logs_only=False):
     con = connect(path, readonly=not clean)
     pending = []
     try:
-        tables = schema(con)
         if clean:
             con.execute("pragma secure_delete=ON")
             con.execute("begin immediate")
+        else:
+            con.execute("begin")
+        tables = schema(con)
         for table, columns in tables.items():
             if table in SAFE_TABLES:
                 continue
-            if kind == "state" and table == "thread_read_receipts" and columns != {
-                "thread_id", "first_unread_turn", "revision", "last_published_turn"
-            }:
+            if not supported_table_schema(con, kind, table, columns):
                 if con.execute(f"select 1 from {quote(table)} limit 1").fetchone():
                     pending.append(f"Unsupported table schema (preserved): {path.name}/{table}")
                 continue

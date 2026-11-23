@@ -18,7 +18,7 @@ T1 = "11111111-1111-4111-8111-111111111111"
 T2 = "22222222-2222-4222-8222-222222222222"
 
 
-class CleanupTests(unittest.TestCase):
+class CleanupFixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="cleaner-test-")
         self.root = Path(self.tmp.name)
@@ -50,6 +50,8 @@ class CleanupTests(unittest.TestCase):
         with closing(sqlite3.connect(path)) as con:
             return con.execute(f"select * from {cc.quote(table)}").fetchall()
 
+
+class CleanupTests(CleanupFixture):
     def global_state(self):
         d = {"local-projects": {"p": {"rootPaths": [str(self.root / "actual-repo")]}},
              "selected-project": {"projectId": "p"}, "project-order": ["p"],
@@ -547,6 +549,132 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual((count, errors), (0, []))
         self.assertIn('orphan', history.read_text())
         self.assertEqual(json.loads(cfg.read_text()), {"oauthAccount": {"keep": "KEEP"}})
+
+
+class AttachmentCleanupTests(CleanupFixture):
+    coverage = "local_thread_catalog_history_coverage"
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(patch.object(app, "codex_storage", return_value=self.storage))
+        self.enterContext(patch.object(app, "home", return_value=self.user))
+        self.enterContext(patch.object(app, "appdata_local", return_value=self.storage.local))
+        self.enterContext(patch.object(app, "appdata_roaming", return_value=self.storage.roaming))
+        self.rollouts = {tid: self.file(self.home / "sessions" / f"rollout-{tid}.jsonl") for tid in (T1, T2)}
+        self.payload_file = self.file(self.root / "project/attachment.txt", "KEEP")
+        self.state_db = self.db("state_5.sqlite", """
+            CREATE TABLE threads(id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL);
+            CREATE TABLE thread_attachments(
+                id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+                attachment_type TEXT NOT NULL, identity_key TEXT NOT NULL, payload TEXT NOT NULL,
+                created_at INTEGER NOT NULL, UNIQUE(thread_id, attachment_type, identity_key));
+        """)
+        with closing(sqlite3.connect(self.state_db)) as con:
+            con.executemany("INSERT INTO threads VALUES (?, ?)", [(tid, str(p)) for tid, p in self.rollouts.items()])
+            con.executemany("INSERT INTO thread_attachments VALUES (?, ?, 'file', 'key', ?, 1)",
+                            [(f"attachment-{i}", tid, str(self.payload_file)) for i, tid in enumerate(self.rollouts)])
+            con.commit()
+        self.catalog = self.db("sqlite/codex.db", f"""
+            CREATE TABLE {self.coverage}(
+                host_id TEXT NOT NULL, scope TEXT NOT NULL, cursor TEXT, complete INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(host_id, scope));
+            INSERT INTO {self.coverage} VALUES
+                ('local', 'all', '{T1}', 0), ('local', '{T1}', NULL, 1), ('remote', 'all', 'cursor', 0);
+            CREATE TABLE automations(prompt TEXT);
+            INSERT INTO automations VALUES ('KEEP');
+        """)
+
+    def delete_first(self):
+        records = [rec for rec in app.load_codex_records() if rec.record_id == T1]
+        self.assertEqual(len(records), 1)
+        return app.delete_selected_records(records)
+
+    def test_selected_deletes_only_first_chat_and_preserves_shared_progress(self):
+        progress = self.rows(self.catalog, self.coverage)
+        self.assertEqual(self.delete_first(), (1, []))
+        self.assertEqual([r[1] for r in self.rows(self.state_db, "thread_attachments")], [T2])
+        self.assertFalse(self.rollouts[T1].exists())
+        self.assertTrue(self.rollouts[T2].exists())
+        self.assertCountEqual(self.rows(self.catalog, self.coverage), progress)
+        self.assertEqual(self.payload_file.read_text(), "KEEP")
+
+    def test_common_only_preserves_both_tables_and_chats(self):
+        attachments = self.rows(self.state_db, "thread_attachments")
+        progress = self.rows(self.catalog, self.coverage)
+        log = self.file(self.home / "log/codex.log")
+        cache = self.file(self.desktop / "Cache/data")
+        self.assertEqual(app.clean_common_traces(), (1, []))
+        self.assertFalse(log.exists())
+        self.assertFalse(cache.exists())
+        self.assertCountEqual(self.rows(self.state_db, "thread_attachments"), attachments)
+        self.assertCountEqual(self.rows(self.catalog, self.coverage), progress)
+        self.assertTrue(all(p.exists() for p in self.rollouts.values()))
+
+    def test_full_clears_attachments_and_progress_for_all_hosts(self):
+        pending = cc.inspect_remaining(self.storage)
+        self.assertIn("Remaining: state_5.sqlite/thread_attachments", pending)
+        self.assertIn(f"Remaining: codex.db/{self.coverage}", pending)
+        self.assertEqual(app.clean_privacy_traces(), (1, []))
+        self.assertEqual(self.rows(self.state_db, "thread_attachments"), [])
+        self.assertEqual(self.rows(self.catalog, self.coverage), [])
+        self.assertFalse(any(p.exists() for p in self.rollouts.values()))
+        self.assertEqual(self.rows(self.catalog, "automations"), [("KEEP",)])
+        self.assertEqual(self.payload_file.read_text(), "KEEP")
+        self.assertEqual(cc.inspect_remaining(self.storage), [])
+
+    def test_retry_finds_attachment_after_parent_row_was_deleted(self):
+        self.db("state_5.sqlite", f"DELETE FROM threads WHERE id = '{T1}';")
+        self.assertEqual(cc.inspect_remaining(self.storage, {T1}), ["Remaining: state_5.sqlite/thread_attachments"])
+        self.assertEqual(self.delete_first(), (1, []))
+        self.assertFalse(self.rollouts[T1].exists())
+        self.assertEqual([r[1] for r in self.rows(self.state_db, "thread_attachments")], [T2])
+        self.assertEqual(cc.inspect_remaining(self.storage, {T1}), [])
+
+    def test_legacy_thread_artifacts_still_supports_selected_and_full(self):
+        self.db("state_5.sqlite", """
+            ALTER TABLE thread_attachments RENAME TO thread_artifacts;
+            ALTER TABLE thread_artifacts RENAME COLUMN attachment_type TO artifact_type;
+        """)
+        self.assertEqual(self.delete_first(), (1, []))
+        self.assertEqual([r[1] for r in self.rows(self.state_db, "thread_artifacts")], [T2])
+        self.assertEqual(app.clean_privacy_traces(), (1, []))
+        self.assertEqual(self.rows(self.state_db, "thread_artifacts"), [])
+
+    def test_changed_tables_are_preserved_and_reported_on_selected_and_full(self):
+        self.db("state_5.sqlite", "ALTER TABLE thread_attachments ADD COLUMN future AS (payload);")
+        self.db("sqlite/codex.db", f"ALTER TABLE {self.coverage} RENAME COLUMN scope TO future_scope;")
+        warnings = ["Unsupported table schema (preserved): state_5.sqlite/thread_attachments",
+                    f"Unsupported table schema (preserved): codex.db/{self.coverage}"]
+        attachments = self.rows(self.state_db, "thread_attachments")
+        progress = self.rows(self.catalog, self.coverage)
+        for ids, clean in [({T1}, self.delete_first), (None, app.clean_privacy_traces)]:
+            with self.subTest(ids=ids):
+                count, errors = clean()
+                self.assertEqual(count, 0)
+                remaining = cc.inspect_remaining(self.storage, ids)
+                for warning in warnings:
+                    self.assertTrue(any(e.endswith(warning) for e in errors), errors)
+                    self.assertIn(warning, remaining)
+                self.assertCountEqual(self.rows(self.state_db, "thread_attachments"), attachments)
+                self.assertCountEqual(self.rows(self.catalog, self.coverage), progress)
+
+    def test_changed_ownership_keys_with_original_column_names_are_preserved(self):
+        self.db("state_5.sqlite", "ALTER TABLE threads RENAME COLUMN id TO new_parent_id;")
+        self.db("sqlite/codex.db", f"""
+            ALTER TABLE {self.coverage} RENAME TO old_coverage;
+            CREATE TABLE {self.coverage}(
+                host_id TEXT NOT NULL, scope TEXT NOT NULL, cursor TEXT, complete INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(scope, host_id));
+            INSERT INTO {self.coverage} SELECT * FROM old_coverage;
+            DROP TABLE old_coverage;
+        """)
+        for path, table in [(self.state_db, "thread_attachments"), (self.catalog, self.coverage)]:
+            with self.subTest(table=table):
+                before = self.rows(path, table)
+                warning = [f"Unsupported table schema (preserved): {path.name}/{table}"]
+                self.assertEqual(cc.database_rows(path, clean=True), warning)
+                self.assertIn(warning[0], cc.inspect_remaining(self.storage))
+                self.assertCountEqual(self.rows(path, table), before)
 
 
 if __name__ == "__main__":
