@@ -1,5 +1,7 @@
 ﻿import json
 import codex_cleanup as cc
+import claude_cleanup as cl
+import project_cleanup
 import locale
 import os
 import sqlite3
@@ -14,7 +16,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.2.3"
 APP_NAME = f"AI Archive Cleaner {APP_VERSION}"
 
 COLOR_BG = "#171a1e"
@@ -35,17 +37,13 @@ STRINGS = {
         "provider_claude": "Claude",
         "none": "なし",
         "size_failed": "取得失敗",
-        "untitled": "(無題)",
         "archived": "アーカイブ済み",
         "normal": "通常",
         "jsonl_history": "JSONL履歴",
-        "artifact": "生成物",
         "delete": "削除",
         "reload": "再読み込み",
         "check_all": "全チェック",
         "uncheck_all": "全解除",
-        "delete_common": "共通ログ/キャッシュも一緒に消す",
-        "delete_privacy": "ローカル履歴とプロジェクト一覧を全削除",
         "search": "検索",
         "kind": "種類",
         "title": "タイトル",
@@ -55,35 +53,14 @@ STRINGS = {
         "cwd": "作業フォルダ",
         "path": "保存場所",
         "load_failed": "読み込みに失敗しました。\n\n{error}",
-        "status_line": "{shown} 件を表示中 / チェック {checked} 件 / 共通ログ・キャッシュ {common} 箇所 / プライバシー削除 {privacy} 箇所",
-        "select_to_delete": "削除するチャット/生成物にチェックを入れてください。",
+        "status_line": "{shown} 件を表示中 / チェック {checked} 件",
+        "confirm_full": "このPCの対応する Codex・Claude Code の全履歴、プロジェクト一覧、共通ログ・キャッシュを削除します。チャット専用フォルダーにある Git リポジトリと未コミットのファイルも削除します。バックアップは作成しません。続行しますか？",
+        "confirm_selected": "選択した {count} 件の履歴と専用フォルダー（中の Git リポジトリ・未コミットのファイルを含む）、使われなくなったプロジェクト登録、共通ログ・キャッシュを削除します。残すチャットのプロジェクトは保持します。バックアップは作成しません。\n\n{titles}\n\n続行しますか？",
+        "cleanup_warning": "一部が未完了です。\n\n{errors}",
+        "cleanup_info": "対象の履歴、プロジェクト登録、共通ログ・キャッシュの処理が完了しました。",
         "running_apps": "対象アプリが起動中です。\n書き込み競合を避けるため、終了してから削除します。\n\n終了対象: {apps}\n\n終了して続行しますか？",
         "more_items": "...ほか {count} 件",
-        "delete_common_confirm": "\n共通ログ/キャッシュも一緒に削除します。",
-        "delete_privacy_confirm": "\n選択に関係なく対応するCodexのローカル履歴・下書き・生成物・ログとプロジェクト一覧を削除します。\nDocuments/Codexでは、IDで対応付けられたプロジェクト未指定チャットのフォルダーも削除します。\n実プロジェクト、Codex本体と内部ブラウザーのログイン情報は保持します。\nクラウド履歴・既存バックアップ・削除済み領域の復元対策は対象外です。",
-        "confirm_delete": "選択した {count} 件と、チャットIDで特定できる関連データを削除します。Documents/Codexの対応するチャット用フォルダーも対象です。{common_text}\n所有者を特定できないデータは残ります。バックアップは作りません。\n\n{titles}\n\n続行しますか？",
-        "processed_warning": "チャット/生成物 {records} 件、共通痕跡 {common} グループ、全削除 {privacy} グループの完了を確認しました。\n一部が未完了です。部分的に削除済みの項目もあります。\n\n{errors}",
-        "processed_info": "チャット/生成物 {records} 件、共通痕跡 {common} グループ、全削除 {privacy} グループの完了を確認しました。",
         "stop_process_failed": "対象アプリを終了できませんでした。手動で終了してから再実行してください。",
-        "empty_delete_path": "削除パスが空です",
-        "refuse_root_delete": "保存場所のルート自体は削除しません: {path}",
-        "outside_allowed_path": "許可された場所の外です: {path}",
-        "protected_common_path": "設定・認証・履歴に関わるため共通削除では扱いません: {path}",
-        "sqlite_checkpoint_failed": "SQLiteのWALチェックポイントに失敗しました: {path}",
-        "privacy_remaining": "削除後も対象データが残っています: {name}",
-        "unsupported_action": "未対応の処理です: {action}",
-        "common_codex_logs_db": "Codex ログDB",
-        "common_codex_tui_log": "Codex TUIログ",
-        "common_codex_sandbox_log": "Codex sandboxログ",
-        "common_codex_internal_sandbox_log": "Codex sandbox内部ログ",
-        "common_claude_session_env": "Claude Code セッション環境",
-        "common_claude_shell_snapshots": "Claude Code shellスナップショット",
-        "common_claude_cli_node_cache": "Claude CLI Node.jsキャッシュ",
-        "common_claude_native_host_logs": "Claude Native Hostログ",
-        "common_claude_desktop": "Claude Desktop {name}",
-        "privacy_claude": "Claude 履歴・メタデータ",
-        "privacy_codex": "Codex 履歴・メタデータ・生成物",
-        "windows_only": "このツールはWindows専用です。",
     },
     "en": {
         "provider_codex": "Codex",
@@ -91,17 +68,13 @@ STRINGS = {
         "provider_claude": "Claude",
         "none": "None",
         "size_failed": "Failed",
-        "untitled": "(Untitled)",
         "archived": "Archived",
         "normal": "Normal",
         "jsonl_history": "JSONL history",
-        "artifact": "Artifact",
         "delete": "Delete",
         "reload": "Reload",
         "check_all": "Check all",
         "uncheck_all": "Clear all",
-        "delete_common": "Also delete shared logs/cache",
-        "delete_privacy": "Delete all local history and project lists",
         "search": "Search",
         "kind": "Type",
         "title": "Title",
@@ -111,35 +84,14 @@ STRINGS = {
         "cwd": "Working folder",
         "path": "Path",
         "load_failed": "Failed to load records.\n\n{error}",
-        "status_line": "{shown} shown / {checked} checked / {common} shared log/cache targets / {privacy} privacy targets",
-        "select_to_delete": "Check chats/artifacts to delete first.",
+        "status_line": "{shown} shown / {checked} checked",
+        "confirm_full": "Delete all supported local Codex and Claude Code history, project registrations, and shared logs/caches? Chat-owned folders include any Git repositories and uncommitted files inside them. No backup will be made.",
+        "confirm_selected": "Delete {count} selected chats, their dedicated folders (including Git repositories and uncommitted files), unused project registrations, and shared logs/caches? Projects used by remaining chats are preserved. No backup will be made.\n\n{titles}",
+        "cleanup_warning": "Cleanup is incomplete.\n\n{errors}",
+        "cleanup_info": "Cleanup of the targeted history, project registrations, and shared logs/caches is complete.",
         "running_apps": "Target apps are running.\nThey will be closed before deletion to avoid write conflicts.\n\nApps to close: {apps}\n\nClose them and continue?",
         "more_items": "...and {count} more",
-        "delete_common_confirm": "\nShared logs/cache will also be deleted.",
-        "delete_privacy_confirm": "\nDelete supported local Codex history, drafts, artifacts, logs, and project lists regardless of selection.\nDelete ID-mapped projectless chat folders in Documents/Codex.\nPreserve actual projects and app and internal browser login data.\nCloud history, existing backups, and recovery from deallocated disk space are outside this operation.",
-        "confirm_delete": "Delete {count} selected item(s) and related data identifiable by chat ID, including mapped chat folders in Documents/Codex.{common_text}\nData whose owner cannot be identified remains. No backup will be created.\n\n{titles}\n\nContinue?",
-        "processed_warning": "Confirmed completion: {records} chat/artifact item(s), {common} shared cleanup group(s), and {privacy} full cleanup group(s).\nSome operations are incomplete and may already be partially deleted.\n\n{errors}",
-        "processed_info": "Confirmed completion: {records} chat/artifact item(s), {common} shared cleanup group(s), and {privacy} full cleanup group(s).",
         "stop_process_failed": "Could not close the target apps. Close them manually and run again.",
-        "empty_delete_path": "Delete path is empty",
-        "refuse_root_delete": "Refusing to delete the storage root itself: {path}",
-        "outside_allowed_path": "Path is outside the allowed locations: {path}",
-        "protected_common_path": "Shared cleanup will not touch settings, auth, or history paths: {path}",
-        "sqlite_checkpoint_failed": "SQLite WAL checkpoint failed: {path}",
-        "privacy_remaining": "Privacy data remains after cleanup: {name}",
-        "unsupported_action": "Unsupported action: {action}",
-        "common_codex_logs_db": "Codex logs DB",
-        "common_codex_tui_log": "Codex TUI logs",
-        "common_codex_sandbox_log": "Codex sandbox log",
-        "common_codex_internal_sandbox_log": "Codex internal sandbox log",
-        "common_claude_session_env": "Claude Code session env",
-        "common_claude_shell_snapshots": "Claude Code shell snapshots",
-        "common_claude_cli_node_cache": "Claude CLI Node.js cache",
-        "common_claude_native_host_logs": "Claude Native Host logs",
-        "common_claude_desktop": "Claude Desktop {name}",
-        "privacy_claude": "Claude history and metadata",
-        "privacy_codex": "Codex history, metadata, and artifacts",
-        "windows_only": "This tool supports Windows only.",
     },
 }
 
@@ -214,41 +166,6 @@ class CleanRecord:
             return tr("size_failed")
         return format_size(size)
 
-
-@dataclass
-class CommonTarget:
-    name: str
-    path: Path
-    action: str
-
-
-CLAUDE_SESSION_METADATA_KEYS = frozenset(
-    {
-        "lastAPIDuration",
-        "lastAPIDurationWithoutRetries",
-        "lastCost",
-        "lastDuration",
-        "lastFpsAverage",
-        "lastFpsLow1Pct",
-        "lastGracefulShutdown",
-        "lastHintSessionId",
-        "lastLinesAdded",
-        "lastLinesRemoved",
-        "lastModelUsage",
-        "lastSessionFirstPrompt",
-        "lastSessionId",
-        "lastSessionMetrics",
-        "lastSessionModified",
-        "lastStartTime",
-        "lastToolDuration",
-        "lastTotalCacheCreationInputTokens",
-        "lastTotalCacheReadInputTokens",
-        "lastTotalInputTokens",
-        "lastTotalOutputTokens",
-        "lastTotalWebSearchRequests",
-        "lastVersionBase",
-    }
-)
 
 def folder_size(path: Path) -> int:
     total = 0
@@ -326,6 +243,20 @@ def process_id_running(process_id: str) -> bool:
     return process_id in result.stdout
 
 
+def claude_node_process_ids() -> list[str]:
+    # Older npm installs run the CLI in node.exe. Only match the Node entry script.
+    if os.name != "nt":
+        return []
+    command = r"""$ErrorActionPreference = 'Stop'
+Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object {
+    $_.CommandLine -match '^\s*(?:"[^"]+"|\S+)\s+(?:"[^"]*[\\/]@anthropic-ai[\\/]claude-code[\\/]cli\.js"|[^\s"]*[\\/]@anthropic-ai[\\/]claude-code[\\/]cli\.js)(?:\s|$)'
+} | ForEach-Object { $_.ProcessId }"""
+    result = run_hidden(["powershell", "-NoProfile", "-Command", command])
+    if result.returncode:
+        raise RuntimeError("Unable to verify Claude Code process state")
+    return [line.strip() for line in result.stdout.splitlines() if line.strip().isdigit()]
+
+
 def stop_processes(image_names: list[str], process_ids: list[str] | None = None) -> None:
     # Codex Desktop is now hosted by ChatGPT.exe.  Killing only its bundled
     # codex.exe sidecar leaves the Electron shell alive and it can restart the
@@ -364,43 +295,18 @@ def codex_home() -> Path:
 
 
 def claude_home() -> Path:
-    return home() / ".claude"
+    root = cc.lexical(Path(os.environ.get("CLAUDE_CONFIG_DIR") or home() / ".claude"))
+    if root == cc.lexical(home()) or root == Path(root.anchor):
+        raise ValueError("CLAUDE_CONFIG_DIR must be a dedicated application directory")
+    return root
 
 
 def codex_index_path() -> Path:
     return codex_home() / "session_index.jsonl"
 
 
-def codex_history_path() -> Path:
-    return codex_home() / "history.jsonl"
-
-
-def codex_global_state_path() -> Path:
-    return codex_home() / ".codex-global-state.json"
-
-
-def codex_sessions_path() -> Path:
-    return codex_home() / "sessions"
-
-
-def codex_archived_sessions_path() -> Path:
-    return codex_home() / "archived_sessions"
-
-
-def codex_documents_path() -> Path:
-    return codex_storage().documents
-
-
-def claude_projects_path() -> Path:
-    return claude_home() / "projects"
-
-
-def claude_history_path() -> Path:
-    return claude_home() / "history.jsonl"
-
-
 def claude_json_path() -> Path:
-    return home() / ".claude.json"
+    return (claude_home() if os.environ.get("CLAUDE_CONFIG_DIR") else home()) / ".claude.json"
 
 
 def claude_desktop_data_paths() -> list[Path]:
@@ -416,7 +322,7 @@ def claude_desktop_data_paths() -> list[Path]:
     unique = []
     seen = set()
     for root in roots:
-        normalized = str(safe_resolve(root))
+        normalized = str(cc.lexical(root))
         if normalized not in seen:
             seen.add(normalized)
             unique.append(root)
@@ -437,50 +343,9 @@ def strip_windows_extended_prefix(value: str) -> str:
     return value
 
 
-def safe_resolve(path: Path) -> Path:
-    expanded = path.expanduser()
-    normalized = Path(strip_windows_extended_prefix(str(expanded)))
-    return normalized.resolve(strict=False)
-
-
-def is_relative_to(child: Path, parent: Path) -> bool:
-    try:
-        child.relative_to(parent)
-        return True
-    except ValueError:
-        return False
-
-
-def validate_record_path(record: CleanRecord) -> Path:
-    if not record.path.strip():
-        raise ValueError(tr("empty_delete_path"))
-
-    cc.reject_links(cc.lexical(Path(record.path)))
-    target = safe_resolve(Path(record.path))
-    if record.provider == PROVIDER_CODEX:
-        roots = [codex_sessions_path(), codex_archived_sessions_path()]
-    else:
-        roots = []
-
-    for root in roots:
-        cc.reject_links(cc.lexical(root))
-    resolved_roots = [safe_resolve(root) for root in roots]
-    if target in resolved_roots:
-        raise ValueError(tr("refuse_root_delete", path=target))
-    if not any(is_relative_to(target, root) for root in resolved_roots):
-        raise ValueError(tr("outside_allowed_path", path=target))
-    return target
-
-
-def delete_record_file(record: CleanRecord) -> None:
-    target = validate_record_path(record)
-    if not target.exists():
-        return
-    cc.remove_path(target, target.parent)
-
-
 def load_codex_thread_names() -> dict[str, str]:
     path = codex_index_path()
+    cc.reject_links(path)
     if not path.exists():
         return {}
     names = {}
@@ -490,6 +355,8 @@ def load_codex_thread_names() -> dict[str, str]:
                 try:
                     item = json.loads(line)
                 except json.JSONDecodeError:
+                    continue
+                if not isinstance(item, dict):
                     continue
                 thread_id = item.get("id")
                 thread_name = item.get("thread_name")
@@ -502,11 +369,14 @@ def load_codex_thread_names() -> dict[str, str]:
 
 def load_codex_records() -> list[CleanRecord]:
     names = load_codex_thread_names()
-    return [CleanRecord(
+    records = [CleanRecord(
         provider=PROVIDER_CODEX, record_id=tid, title=names.get(tid) or title,
         path=path, updated_at=float(updated), cwd=cwd,
         status=tr("archived") if archived else tr("normal"),
     ) for tid, title, path, archived, updated, cwd in cc.list_threads(codex_storage())]
+    known = {r.record_id for r in records}
+    records.extend(CleanRecord(PROVIDER_CODEX, tid, title, "", 0) for tid, title in names.items() if tid not in known)
+    return records
 
 
 def extract_text(value) -> str:
@@ -544,14 +414,17 @@ def summarize_claude_jsonl(path: Path) -> tuple[str, str, str]:
                     item = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                session_id = item.get("sessionId") or session_id
-                cwd = item.get("cwd") or cwd
-                candidate = item.get("summary") or item.get("title") or item.get("name")
+                if not isinstance(item, dict):
+                    continue
+                if isinstance(item.get("cwd"), str) and item["cwd"]:
+                    cwd = item["cwd"]
+                candidate = item.get("customTitle") or item.get("summary") or item.get("title") or item.get("name")
                 if isinstance(candidate, str) and candidate.strip():
                     explicit_title = candidate.strip()
                 if not first_user_text and item.get("type") == "user":
                     message = item.get("message") or {}
-                    first_user_text = extract_text(message.get("content")).strip()
+                    if isinstance(message, dict):
+                        first_user_text = extract_text(message.get("content")).strip()
                 if item.get("type") == "queue-operation" and item.get("content"):
                     explicit_title = str(item.get("content")).strip()
     except OSError:
@@ -560,185 +433,33 @@ def summarize_claude_jsonl(path: Path) -> tuple[str, str, str]:
     return session_id, normalize_title(explicit_title or first_user_text, path.stem), cwd
 
 
-def decode_claude_project_name(name: str) -> str:
-    if "--" in name:
-        return name.replace("--", ":\\").replace("-", "\\")
-    return name
-
-
-def load_claude_desktop_titles() -> dict[str, str]:
-    titles = {}
-    for root in claude_desktop_code_sessions_paths():
-        if not root.exists():
-            continue
-        for path in root.rglob("*.json"):
-            try:
-                data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-            except Exception:
-                continue
-            if not isinstance(data, dict):
-                continue
-            cli_session_id = data.get("cliSessionId")
-            title = data.get("title")
-            if isinstance(cli_session_id, str) and isinstance(title, str) and title.strip():
-                titles[cli_session_id] = title.strip()
-    return titles
-
-
 def load_claude_records() -> list[CleanRecord]:
-    root = claude_projects_path()
-    if not root.exists():
-        return []
-    desktop_titles = load_claude_desktop_titles()
+    root = claude_home()
+    history = cl.read_history(root)
+    sessions = cl.session_ids(root)
     records = []
-    for path in root.rglob("*.jsonl"):
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        session_id, title, cwd = summarize_claude_jsonl(path)
-        title = normalize_title(desktop_titles.get(session_id, title), path.stem)
-        records.append(
-            CleanRecord(
-                provider=PROVIDER_CLAUDE,
-                record_id=session_id,
-                title=title,
-                path=str(path),
-                updated_at=stat.st_mtime,
-                cwd=cwd or decode_claude_project_name(path.parent.name),
-                status=tr("jsonl_history"),
-            )
-        )
-    records.sort(key=lambda item: item.updated_at, reverse=True)
-    return records
-
-
-def load_codex_document_records() -> list[CleanRecord]:
-    root = codex_documents_path()
-    cc.reject_links(cc.lexical(root))
-    if not root.exists():
-        return []
-    records = []
-    for path in root.iterdir():
-        try:
-            stat = path.lstat()
-        except OSError:
-            continue
-        records.append(
-            CleanRecord(
-                provider=PROVIDER_CODEX_DOCS,
-                record_id=path.name,
-                title=f"Documents\\Codex\\{path.name}",
-                path=str(path),
-                updated_at=stat.st_mtime,
-                cwd=str(root),
-                status=tr("artifact"),
-            )
-        )
-    records.sort(key=lambda item: item.updated_at, reverse=True)
+    for sid in sessions.keys() | history.keys():
+        row = history.get(sid, {})
+        folders = sessions.get(sid, ())
+        transcript = next((folder / (sid + ".jsonl") for folder in sorted(folders)
+                           if (folder / (sid + ".jsonl")).is_file()), None)
+        title = normalize_title(str(row.get("display") or ""), sid)
+        cwd = str(row.get("project") or "")
+        stamp = row.get("timestamp") or 0
+        updated = stamp / 1000 if isinstance(stamp, (int, float)) else 0
+        if transcript:
+            _, title, location = summarize_claude_jsonl(transcript)
+            cwd = location or cwd
+            updated = transcript.stat().st_mtime
+        records.append(CleanRecord(PROVIDER_CLAUDE, sid, title, str(transcript or ""),
+                                   updated, cwd=cwd, status=tr("jsonl_history")))
     return records
 
 
 def load_records() -> list[CleanRecord]:
-    records = load_codex_records()
+    records = load_codex_records() + load_claude_records()
     records.sort(key=lambda item: item.updated_at, reverse=True)
     return records
-
-
-def remove_jsonl_lines_by_field(path: Path, field: str, ids: set[str]) -> None:
-    if not ids or not path.exists():
-        return
-    kept_lines = []
-    with path.open("r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                kept_lines.append(line)
-                continue
-            if item.get(field) not in ids:
-                kept_lines.append(line)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text("".join(kept_lines), encoding="utf-8")
-    temp_path.replace(path)
-
-
-def clean_claude_session_metadata(path: Path) -> bool:
-    """Remove session metrics/prompts while preserving Claude login and project settings."""
-    if not path.exists():
-        return False
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise ValueError(f"{path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ValueError(f"{path}: JSON root is not an object")
-
-    changed = False
-    projects = data.get("projects")
-    if isinstance(projects, dict):
-        for project in projects.values():
-            if not isinstance(project, dict):
-                continue
-            for key in CLAUDE_SESSION_METADATA_KEYS:
-                if key in project:
-                    project.pop(key, None)
-                    changed = True
-    if not changed:
-        return False
-
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp_path.replace(path)
-    return True
-
-
-def path_has_files(path: Path) -> bool:
-    """Return whether a file or directory contains meaningful data."""
-    try:
-        if path.is_file():
-            return path.stat().st_size > 0
-        if path.is_dir():
-            return any(item.is_file() for item in path.rglob("*"))
-    except OSError:
-        # An inaccessible target must be treated as present so cleanup reports
-        # the access error instead of silently displaying zero targets.
-        return True
-    return False
-
-
-def claude_session_metadata_present(path: Path) -> bool:
-    if not path.exists():
-        return False
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return True
-    if not isinstance(data, dict):
-        return True
-    projects = data.get("projects")
-    if not isinstance(projects, dict):
-        return False
-    return any(
-        isinstance(project, dict) and any(key in project for key in CLAUDE_SESSION_METADATA_KEYS)
-        for project in projects.values()
-    )
-
-
-def claude_privacy_data_present() -> bool:
-    if any(
-        path_has_files(path)
-        for path in [
-            claude_projects_path(),
-            claude_history_path(),
-            *claude_desktop_code_sessions_paths(),
-        ]
-    ):
-        return True
-    return any(
-        claude_session_metadata_present(path)
-        for path in [claude_json_path(), home() / ".claude.json.backup"]
-    )
 
 
 def codex_privacy_data_present() -> bool:
@@ -754,283 +475,57 @@ def display_path_text(value: str) -> str:
     return strip_windows_extended_prefix(value.strip())
 
 
-def update_claude_json_last_sessions(session_ids: set[str]) -> None:
-    path = claude_json_path()
-    if not session_ids or not path.exists():
-        return
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise ValueError(f"{path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ValueError(f"{path}: JSON root is not an object")
-    changed = False
-    projects = data.get("projects", {})
-    if not isinstance(projects, dict):
-        return
-    for project in projects.values():
-        if isinstance(project, dict) and project.get("lastSessionId") in session_ids:
-            project.pop("lastSessionId", None)
-            project.pop("lastSessionMetrics", None)
-            changed = True
-    if changed:
-        temp_path = path.with_suffix(path.suffix + ".tmp")
-        temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp_path.replace(path)
+def delete_selected_records(records, keep_paths=()):
+    ids = {r.record_id for r in records if r.provider == PROVIDER_CODEX}
+    if len(ids) == 0 and records:
+        return 0, ["Unsupported record type"]
+    errors = cc.delete_selected(codex_storage(), ids, [r.path for r in records], keep_paths=keep_paths)
+    return (0 if errors else len(records)), errors
 
 
-def delete_claude_desktop_code_session_files(session_ids: set[str]) -> list[str]:
-    if not session_ids:
-        return []
-
-    errors = []
-    for root in claude_desktop_code_sessions_paths():
-        if not root.exists():
-            continue
-        root = safe_resolve(root)
-        for path in root.rglob("*.json"):
-            try:
-                resolved = safe_resolve(path)
-                if not is_relative_to(resolved, root):
-                    raise ValueError(tr("outside_allowed_path", path=resolved))
-                data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-                if not isinstance(data, dict):
-                    continue
-                if data.get("cliSessionId") in session_ids:
-                    path.unlink()
-            except Exception as exc:
-                errors.append(f"{path}: {exc}")
-        cleanup_empty_dirs(root)
-    return errors
+def clean_privacy_traces(keep_paths=()):
+    if not codex_privacy_data_present():
+        return 0, []
+    errors = cc.cleanup_all(codex_storage(), keep_paths=keep_paths)
+    return int(not errors), errors
 
 
-def cleanup_empty_dirs(root: Path) -> None:
-    if not root.exists() or not root.is_dir():
-        return
-    root = safe_resolve(root)
-    for path in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
-        try:
-            resolved = safe_resolve(path)
-            if resolved != root and is_relative_to(resolved, root) and path.is_dir():
-                path.rmdir()
-        except OSError:
-            pass
+def clean_common_traces():
+    errors = cc.cleanup_all(codex_storage(), logs_only=True)
+    return int(not errors), errors
 
 
-def run_cleanup_step(errors: list[str], label: str, action) -> None:
-    try:
-        action()
-    except Exception as exc:
-        errors.append(f"{label}: {exc}")
-
-
-def delete_selected_records(records: list[CleanRecord]) -> tuple[int, list[str]]:
-    errors = []
-    codex_records = [r for r in records if r.provider == PROVIDER_CODEX]
-    completed_codex = 0
-    if codex_records:
-        try:
-            codex_errors = cc.delete_selected(codex_storage(),
-                {r.record_id for r in codex_records}, [r.path for r in codex_records])
-        except (OSError, ValueError, sqlite3.Error) as exc:
-            codex_errors = [str(exc)]
-        errors.extend(f"Codex: {e}" for e in codex_errors)
-        if not codex_errors:
-            completed_codex = len(codex_records)
-    records = [r for r in records if r.provider != PROVIDER_CODEX]
-    deleted = []
-    for record in records:
-        try:
-            delete_record_file(record)
-            deleted.append(record)
-        except Exception as exc:
-            errors.append(f"{record.title}: {exc}")
-
-    claude_ids = {record.record_id for record in deleted if record.provider == PROVIDER_CLAUDE}
-
-    if claude_ids:
-        run_cleanup_step(
-            errors,
-            tr("privacy_claude"),
-            lambda: remove_jsonl_lines_by_field(claude_history_path(), "sessionId", claude_ids),
-        )
-        run_cleanup_step(errors, tr("privacy_claude"), lambda: update_claude_json_last_sessions(claude_ids))
-        desktop_errors: list[str] = []
-        run_cleanup_step(
-            errors,
-            tr("privacy_claude"),
-            lambda: desktop_errors.extend(delete_claude_desktop_code_session_files(claude_ids)),
-        )
-        errors.extend(desktop_errors)
-
-    for record in deleted:
-        try:
-            if Path(record.path).exists():
-                errors.append(f"{record.title}: {tr('privacy_remaining', name=record.path)}")
-        except OSError as exc:
-            errors.append(f"{record.title}: {exc}")
-    return len(deleted) + completed_codex, errors
-
-
-def delete_dir_contents(path: Path) -> None:
-    cc.remove_contents(path, path)
-
-
-def truncate_file(path: Path) -> None:
-    cc.reject_links(cc.lexical(path))
-    if path.exists() and path.is_file():
-        path.write_text("", encoding="utf-8")
-
-
-def clean_claude_json_trace() -> None:
-    path = claude_json_path()
-    if not path.exists():
-        return
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return
-    changed = False
-    for key in ["skillUsage", "seenNotifications", "tipsHistory"]:
-        if key in data:
-            data[key] = {} if isinstance(data[key], dict) else []
-            changed = True
-    if changed:
-        temp_path = path.with_suffix(path.suffix + ".tmp")
-        temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp_path.replace(path)
-
-
-def protected_common_paths() -> list[Path]:
-    codex = codex_home()
-    claude = claude_home()
-    protected = [
-        codex / "auth.json",
-        codex / "config.toml",
-        codex / "state_5.sqlite",
-        codex / "state_5.sqlite-wal",
-        codex / "state_5.sqlite-shm",
-        codex / "session_index.jsonl",
-        codex / "history.jsonl",
-        codex / ".codex-global-state.json",
-        codex / ".codex-global-state.json.bak",
-        codex / "sessions",
-        codex / "archived_sessions",
-        codex / "plugins",
-        codex / "skills",
-        codex / "memories",
-        claude / "projects",
-        claude / "history.jsonl",
-        claude_json_path(),
-        home() / ".claude.json.backup",
-    ]
-    for desktop_root in claude_desktop_data_paths():
-        protected.extend(
-            [
-                desktop_root / "config.json",
-                desktop_root / "Preferences",
-                desktop_root / "Local State",
-                desktop_root / "IndexedDB",
-                desktop_root / "Local Storage",
-                desktop_root / "Network",
-                desktop_root / "Partitions",
-                desktop_root / "Session Storage",
-                desktop_root / "WebStorage",
-                desktop_root / "blob_storage",
-                desktop_root / "local-agent-mode-sessions",
-                desktop_root / "claude-code-sessions",
-                desktop_root / "claude-code-vm",
-                desktop_root / "vm_bundles",
-                desktop_root / "Claude Extensions",
-                desktop_root / "Claude Extensions Settings",
-            ]
-        )
-    return protected
-
-
-def is_protected_common_path(path: Path) -> bool:
-    resolved = safe_resolve(path)
-    for protected in protected_common_paths():
-        protected_resolved = safe_resolve(protected)
-        if (resolved == protected_resolved or is_relative_to(resolved, protected_resolved)
-                or is_relative_to(protected_resolved, resolved)):
-            return True
-    return False
-
-
-def common_targets() -> list[CommonTarget]:
-    codex = codex_home()
-    targets = [CommonTarget("Codex Desktop / CLI logs & cache", codex, "codex_shared")]
-    return [target for target in targets if target.path.exists()]
-
-
-def privacy_target_count() -> int:
-    return int(codex_privacy_data_present())
-
-
-def clean_privacy_traces() -> tuple[int, list[str]]:
-    """Remove local AI history data while preserving authentication and app configuration."""
-    errors = []
-    cleaned = 0
-
-    if codex_privacy_data_present():
-        try:
-            codex_errors = cc.cleanup_all(codex_storage())
-        except (OSError, ValueError, sqlite3.Error) as exc:
-            codex_errors = [str(exc)]
-        errors.extend(f"{tr('privacy_codex')}: {e}" for e in codex_errors)
-        if not codex_errors:
-            cleaned += 1
-
-    return cleaned, errors
-
-
-def clean_common_traces() -> tuple[int, list[str]]:
-    errors = []
-    cleaned = 0
-    allowed_roots = [
-        safe_resolve(codex_home()),
-        safe_resolve(claude_home()),
-        safe_resolve(appdata_local() / "Claude"),
-        safe_resolve(appdata_local() / "claude-cli-nodejs"),
-    ]
-    allowed_roots.extend(safe_resolve(path) for path in claude_desktop_data_paths())
-    allowed_files = {
-        safe_resolve(home() / ".claude.json"),
-        safe_resolve(home() / ".claude.json.backup"),
-    }
-    for target in common_targets():
-        try:
-            if target.action == "codex_shared":
-                codex_errors = cc.cleanup_all(codex_storage(), logs_only=True)
-                errors.extend(codex_errors)
-                if not codex_errors:
-                    cleaned += 1
-                continue
-            cc.reject_links(cc.lexical(target.path))
-            resolved = safe_resolve(target.path)
-            if resolved not in allowed_files and not any(
-                resolved == root or is_relative_to(resolved, root) for root in allowed_roots
-            ):
-                raise ValueError(tr("outside_allowed_path", path=resolved))
-            if is_protected_common_path(resolved):
-                raise ValueError(tr("protected_common_path", path=resolved))
-
-            if target.action == "contents":
-                delete_dir_contents(resolved)
-            elif target.action == "truncate":
-                truncate_file(resolved)
-            elif target.action == "delete_file":
-                if resolved.exists() and resolved.is_file():
-                    resolved.unlink()
-            elif target.action == "claude_json_trace":
-                clean_claude_json_trace()
-            else:
-                raise ValueError(tr("unsupported_action", action=target.action))
-            cleaned += 1
-        except Exception as exc:
-            errors.append(f"{target.name}: {exc}")
-    return cleaned, errors
+def cleanup_records(selected, current, *, full):
+    chosen = {(r.provider, r.record_id) for r in selected}
+    kept = [r for r in current if (r.provider, r.record_id) not in chosen]
+    selected = [r for r in current if (r.provider, r.record_id) in chosen]
+    full = full and not kept
+    errors = cc.Result()
+    paths = {cc.lexical(Path(r.cwd)) for r in kept if r.cwd and Path(r.cwd).is_absolute()}
+    claude_paths = {cc.lexical(Path(r.cwd)) for r in current if r.provider == PROVIDER_CLAUDE
+                    and r.cwd and Path(r.cwd).is_absolute()}
+    codex = [r for r in selected if r.provider == PROVIDER_CODEX]
+    retained_transcripts = {cc.lexical(Path(r.path)) for r in kept if r.provider == PROVIDER_CODEX and r.path}
+    if any(r.path and cc.lexical(Path(r.path)) in retained_transcripts for r in codex):
+        return ["A transcript is shared with a retained chat. Its registration must be checked."]
+    if full:
+        result = errors.step("Codex", lambda: clean_privacy_traces(claude_paths))
+        errors.errors.extend(result[1] if result else [])
+    else:
+        result = errors.step("Codex", lambda: delete_selected_records(codex, paths | claude_paths))
+        errors.errors.extend(result[1] if result else [])
+        if not errors.errors:
+            pending = errors.step("Codex projects", lambda: project_cleanup.prune(
+                codex_storage(), [r for r in kept if r.provider == PROVIDER_CODEX], paths))
+            errors.errors.extend(pending or [])
+        result = errors.step("Codex logs/cache", clean_common_traces)
+        errors.errors.extend(result[1] if result else [])
+    claude = {r.record_id for r in selected if r.provider == PROVIDER_CLAUDE}
+    pending = errors.step("Claude Code", lambda: cl.cleanup(claude_home(), claude_json_path(),
+                          claude_desktop_code_sessions_paths(), claude, full=full, common=True,
+                          retained_cwds=[r.cwd for r in kept if r.provider == PROVIDER_CLAUDE]))
+    errors.errors.extend(pending or [])
+    return errors.errors
 
 
 class App(tk.Tk):
@@ -1047,10 +542,9 @@ class App(tk.Tk):
         self.minsize(720, 420)
 
         self.records: dict[str, CleanRecord] = {}
+        self.loaded_records: list[CleanRecord] = []
         self.checked_keys: set[str] = set()
         self.search_var = tk.StringVar(value="")
-        self.common_var = tk.BooleanVar(value=True)
-        self.privacy_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="")
         self.sort_column = "updated"
         self.sort_reverse = True
@@ -1188,16 +682,12 @@ class App(tk.Tk):
         ttk.Button(top, text=tr("reload"), command=self.refresh).grid(row=0, column=1, padx=(0, 8))
         ttk.Button(top, text=tr("check_all"), command=self.check_all).grid(row=0, column=2, padx=(0, 8))
         ttk.Button(top, text=tr("uncheck_all"), command=self.uncheck_all).grid(row=0, column=3, padx=(0, 12))
-        ttk.Checkbutton(top, text=tr("delete_common"), variable=self.common_var, command=self.update_status).grid(
-            row=1, column=0, columnspan=4, sticky="w", pady=(8, 0)
-        )
-        ttk.Checkbutton(top, text=tr("delete_privacy"), variable=self.privacy_var, command=self.update_status).grid(
-            row=1, column=4, columnspan=5, sticky="w", pady=(8, 0)
-        )
+
+
         ttk.Label(top, text=tr("search")).grid(row=0, column=7, padx=(0, 6), sticky="e")
         search = ttk.Entry(top, textvariable=self.search_var, width=28)
         search.grid(row=0, column=8, sticky="e")
-        search.bind("<KeyRelease>", lambda _event: self.refresh())
+        search.bind("<KeyRelease>", lambda _event: self.render_records())
 
         self.tree = ttk.Treeview(self, columns=self.columns, show="headings", selectmode="none")
         self.tree["displaycolumns"] = self.default_display_columns
@@ -1261,6 +751,8 @@ class App(tk.Tk):
         if column == "updated":
             return record.updated_at
         if column == "size":
+            if not record.path:
+                return -1
             path = Path(record.path)
             try:
                 return path_size(path)
@@ -1287,7 +779,7 @@ class App(tk.Tk):
         else:
             self.sort_column = column
             self.sort_reverse = column in {"updated", "size", "checked"}
-        self.refresh()
+        self.render_records()
 
     def current_display_columns(self) -> tuple[str, ...]:
         display_columns = self.tree["displaycolumns"]
@@ -1408,7 +900,7 @@ class App(tk.Tk):
         column = self.display_column_name(self.tree.identify_column(event.x))
         if not row_id:
             return None
-        if column == "checked":
+        if column in {"checked", "title"}:
             self.toggle_checked(row_id)
             return "break"
         if column in {"cwd", "path"}:
@@ -1449,13 +941,16 @@ class App(tk.Tk):
 
     def refresh(self) -> None:
         try:
-            all_records = load_records()
+            self.loaded_records = load_records()
         except Exception as exc:
             messagebox.showerror(APP_NAME, tr("load_failed", error=exc))
             return
 
+        self.render_records()
+
+    def render_records(self) -> None:
         query = self.search_var.get().strip()
-        visible = self.sort_records([record for record in all_records if self.row_matches(record, query)])
+        visible = self.sort_records([record for record in self.loaded_records if self.row_matches(record, query)])
         visible_keys = {record.key for record in visible}
         self.checked_keys &= visible_keys
         self.tree.delete(*self.tree.get_children())
@@ -1484,32 +979,28 @@ class App(tk.Tk):
         self.update_status()
 
     def update_status(self) -> None:
-        common_count = len(common_targets()) if self.common_var.get() else 0
-        privacy_count = privacy_target_count() if self.privacy_var.get() else 0
-        self.status_var.set(
-            tr(
-                "status_line",
-                shown=len(self.records),
-                checked=len(self.checked_keys),
-                common=common_count,
-                privacy=privacy_count,
-            )
-        )
+        self.status_var.set(tr("status_line", shown=len(self.records), checked=len(self.checked_keys)))
+
 
     def toggle_checked(self, key: str) -> None:
         if key in self.checked_keys:
             self.checked_keys.remove(key)
         else:
             self.checked_keys.add(key)
-        self.refresh()
+        self.tree.set(key, "checked", self.checkbox_text(key))
+        self.update_status()
 
     def check_all(self) -> None:
         self.checked_keys = set(self.records)
-        self.refresh()
+        for key in self.records:
+            self.tree.set(key, "checked", self.checkbox_text(key))
+        self.update_status()
 
     def uncheck_all(self) -> None:
         self.checked_keys.clear()
-        self.refresh()
+        for key in self.records:
+            self.tree.set(key, "checked", self.checkbox_text(key))
+        self.update_status()
 
     def checked_records(self) -> list[CleanRecord]:
         return [self.records[key] for key in self.checked_keys if key in self.records]
@@ -1530,25 +1021,26 @@ class App(tk.Tk):
 
     def delete_checked(self) -> None:
         records = self.checked_records()
-        if not records and not self.common_var.get() and not self.privacy_var.get():
-            messagebox.showinfo(APP_NAME, tr("select_to_delete"))
+        try:
+            current = load_records()
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, tr("load_failed", error=exc))
             return
-
-        titles = "\n".join(f"- [{record.provider}] {record.title}" for record in records[:10])
+        selected_keys = {(r.provider, r.record_id) for r in records}
+        full = all((r.provider, r.record_id) in selected_keys for r in current)
+        titles = "\n".join(f"- [{r.provider}] {r.title}" for r in records[:10])
         if len(records) > 10:
             titles += "\n" + tr("more_items", count=len(records) - 10)
-        common_text = tr("delete_common_confirm") if self.common_var.get() else ""
-        privacy_text = tr("delete_privacy_confirm") if self.privacy_var.get() else ""
-        if not messagebox.askyesno(
-            APP_NAME,
-            tr("confirm_delete", count=len(records), common_text=common_text + privacy_text, titles=titles),
-        ):
+        text = tr("confirm_full" if full else "confirm_selected", count=len(records), titles=titles)
+        if not messagebox.askyesno(APP_NAME, text):
             return
+
 
         try:
             codex_desktop_pids = codex_desktop_process_ids()
+            claude_node_pids = claude_node_process_ids()
             running_images = [
-                name for name in ["codex.exe"] if process_running(name)
+                name for name in ["codex.exe", "claude.exe"] if process_running(name)
             ]
         except Exception as exc:
             messagebox.showerror(APP_NAME, str(exc))
@@ -1556,6 +1048,8 @@ class App(tk.Tk):
         running_apps = sorted(set(running_images))
         if codex_desktop_pids:
             running_apps.insert(0, "ChatGPT.exe (Codex)")
+        if claude_node_pids:
+            running_apps.append("node.exe (Claude Code)")
         if running_apps:
             if not messagebox.askyesno(
                 APP_NAME,
@@ -1563,39 +1057,23 @@ class App(tk.Tk):
             ):
                 return
             try:
-                stop_processes(sorted(set(running_images)), codex_desktop_pids)
+                stop_processes(sorted(set(running_images)), codex_desktop_pids + claude_node_pids)
             except Exception as exc:
                 messagebox.showerror(APP_NAME, str(exc))
                 self.refresh()
                 return
 
-        record_deleted, record_errors = delete_selected_records(records)
-        common_deleted = 0
-        common_errors = []
-        if self.common_var.get():
-            common_deleted, common_errors = clean_common_traces()
-        privacy_deleted = 0
-        privacy_errors = []
-        if self.privacy_var.get():
-            privacy_deleted, privacy_errors = clean_privacy_traces()
-
+        try:
+            current = load_records()
+            errors = cleanup_records(records, current, full=full)
+        except Exception as exc:
+            errors = [str(exc)]
         self.checked_keys.clear()
         self.refresh()
-
-        errors = record_errors + common_errors + privacy_errors
         if errors:
-            self.show_cleanup_errors(tr(
-                    "processed_warning",
-                    records=record_deleted,
-                    common=common_deleted,
-                    privacy=privacy_deleted,
-                    errors="\n".join(dict.fromkeys(errors)),
-                ))
+            self.show_cleanup_errors(tr("cleanup_warning", errors="\n".join(dict.fromkeys(errors))))
         else:
-            messagebox.showinfo(
-                APP_NAME,
-                tr("processed_info", records=record_deleted, common=common_deleted, privacy=privacy_deleted),
-            )
+            messagebox.showinfo(APP_NAME, tr("cleanup_info"))
 
 
 def main() -> int:

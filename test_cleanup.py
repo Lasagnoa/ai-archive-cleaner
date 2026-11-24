@@ -8,7 +8,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import codex_cleanup as cc
 import app
@@ -28,6 +28,13 @@ class CleanupFixture(unittest.TestCase):
         self.storage = cc.Storage(self.home, self.user, self.user / "Roaming", self.user / "Local",
                                   self.user / "Documents/Codex")
         self.desktop = self.storage.roaming / "Codex"
+        self.enterContext(patch.object(app, "home", return_value=self.user))
+        self.enterContext(patch.object(app, "appdata_local", return_value=self.storage.local))
+        self.enterContext(patch.object(app, "appdata_roaming", return_value=self.storage.roaming))
+        self.enterContext(patch.object(app, "codex_storage", return_value=self.storage))
+        self.enterContext(patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": ""}))
+        self.enterContext(patch.object(app, "claude_node_process_ids", return_value=[]))
+        self.enterContext(patch.object(app, "stop_processes", side_effect=AssertionError("unexpected live process operation")))
 
     def tearDown(self):
         assert self.root.resolve().parent == Path(tempfile.gettempdir()).resolve()
@@ -321,23 +328,23 @@ class CleanupTests(CleanupFixture):
         artifact = self.file(output / "report.txt", "KEEP")
         state = self.home / ".codex-global-state.json"
         self.file(state, json.dumps({"thread-projectless-output-directories": {T1: str(output), T2: str(output)}}))
-        self.assertTrue(cc.delete_selected(self.storage, {T1}, []))
+        self.assertEqual(cc.delete_selected(self.storage, {T1}, []), [])
         self.assertEqual(artifact.read_text(), "KEEP")
         self.file(state, json.dumps({"thread-projectless-output-directories": {T1: str(output)},
                                      "local-projects": {"p": {"rootPaths": [str(output.parent)]}}}))
-        self.assertTrue(cc.cleanup_all(self.storage))
+        self.assertEqual(cc.cleanup_all(self.storage), [])
         self.assertEqual(artifact.read_text(), "KEEP")
-        self.assertIn(T1, json.loads(state.read_text())["thread-projectless-output-directories"])
+        self.assertEqual(json.loads(state.read_text()), {})
 
-    def test_projectless_git_repository_is_preserved(self):
+    def test_selected_deletes_git_in_dedicated_chat_folder(self):
         output = self.storage.documents / "2026-11-10/example/outputs"
         artifact = self.file(output / "report.txt", "KEEP")
         self.file(output.parent / ".git/config", "KEEP")
         self.file(self.home / ".codex-global-state.json", json.dumps({
             "thread-projectless-output-directories": {T1: str(output)}
         }))
-        self.assertTrue(cc.delete_selected(self.storage, {T1}, []))
-        self.assertEqual(artifact.read_text(), "KEEP")
+        self.assertEqual(cc.delete_selected(self.storage, {T1}, []), [])
+        self.assertFalse(artifact.parent.parent.exists())
 
     def test_full_cleanup_removes_mapped_projectless_output(self):
         output = self.storage.documents / "2026-11-10/example/outputs"
@@ -534,8 +541,7 @@ class CleanupTests(CleanupFixture):
     def test_app_partial_failure_is_not_counted_as_completed(self):
         rec = app.CleanRecord(app.PROVIDER_CODEX, T1, "fixture", "", 0)
         with patch.object(app, "codex_storage", return_value=self.storage), \
-             patch.object(cc, "delete_selected", return_value=["partial failure"]), \
-             patch.object(app, "cleanup_empty_dirs"), patch.object(app, "claude_projects_path", return_value=self.user / ".claude/projects"):
+             patch.object(cc, "delete_selected", return_value=["partial failure"]):
             count, errors = app.delete_selected_records([rec])
         self.assertEqual(count, 0)
         self.assertTrue(errors)
@@ -549,6 +555,276 @@ class CleanupTests(CleanupFixture):
         self.assertEqual((count, errors), (0, []))
         self.assertIn('orphan', history.read_text())
         self.assertEqual(json.loads(cfg.read_text()), {"oauthAccount": {"keep": "KEEP"}})
+
+
+class DesktopGlobalStateTests(CleanupFixture):
+    owner = "electron-owner-atoms:owner-a"
+    selected = "electron-owner-value:selected-project:owner-a"
+    outputs = "electron-owner-value:thread-projectless-output-directories:owner-a"
+
+    def setUp(self):
+        super().setUp()
+        self.db_path = self.db(cc.GLOBAL_DB, """
+            PRAGMA user_version=1;
+            CREATE TABLE settings(scope TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+                                  PRIMARY KEY(scope,key)) WITHOUT ROWID;
+        """)
+        self.enterContext(patch.object(app, "codex_storage", return_value=self.storage))
+
+    def settings(self, entries):
+        with closing(sqlite3.connect(self.db_path)) as con:
+            con.executemany("insert into settings values(?,?,?)",
+                            [(s, k, json.dumps(v)) for s, k, v in entries])
+            con.commit()
+
+    def saved(self):
+        return {(s, k): json.loads(v) for s, k, v in self.rows(self.db_path, "settings")}
+
+    def test_full_clears_project_list_and_new_chat_choice_in_every_store(self):
+        project = {"type": "local", "projectId": "old-project"}
+        order = ["codex:project:old-project", "space:space:keep:me"]
+        by_computer = {"computer": "old-project", "another": None}
+        project_pref = json.dumps(["account", "user", "old-project"])
+        default_pref = json.dumps(["account", "user", None])
+        atoms = {"new-task-project-by-computer": by_computer, "unified-sidebar-project-order-v1": order,
+                 "sidebar-custom-sections-v3": {"account": {"sections": [{"name": "Work", "itemKeys": order}]}},
+                 "sidebar-customization-snapshots-v2": {"account": {"order": order, "pinOverrides": dict.fromkeys(order, True)}},
+                 "new-task-execution-by-account-project": {project_pref: 1, default_pref: 2},
+                 "sidebar-width": 320}
+        data = {"local-projects": {"old-project": project}, self.selected: project, self.owner: atoms,
+                "electron-owner-value:open-in-target-preferences:owner-a": {"global": "keep"}}
+        files = [self.file(self.home / n, json.dumps(data)) for n in
+                 (".codex-global-state.json", ".codex-global-state.json.bak")]
+        self.settings([("global", self.selected, project), ("global", "local-projects", data["local-projects"]),
+                       ("global", "project-order", ["old-project"]), ("global", self.owner, {}),
+                       ("global", "electron-automations-installation-id", "KEEP"),
+                       ("atom", "prompt-history", {"workspace": ["draft"]}),
+                       ("electron-owner-atoms:second", "new-task-project-by-computer", by_computer),
+                       ("future-scope", "selected-project", "KEEP"),
+                       *((self.owner, k, v) for k, v in atoms.items())])
+        self.assertTrue(cc.inspect_remaining(self.storage))
+        self.assertEqual(app.clean_privacy_traces(), (1, []))
+        remaining_atoms = {"unified-sidebar-project-order-v1": order[1:],
+                           "sidebar-custom-sections-v3": {"account": {"sections": [{"name": "Work", "itemKeys": order[1:]}]}},
+                           "sidebar-customization-snapshots-v2": {"account": {"order": order[1:], "pinOverrides": {order[1]: True}}},
+                           "new-task-execution-by-account-project": {default_pref: 2}, "sidebar-width": 320}
+        for path in files:
+            self.assertEqual(json.loads(path.read_text()), {
+                self.owner: remaining_atoms,
+                "electron-owner-value:open-in-target-preferences:owner-a": {"global": "keep"}})
+        self.assertEqual(self.saved(), {("global", self.owner): {}, ("future-scope", "selected-project"): "KEEP",
+                                        ("global", "electron-automations-installation-id"): "KEEP",
+                                        **{(self.owner, k): v for k, v in remaining_atoms.items()}})
+        self.assertEqual(cc.inspect_remaining(self.storage), [])
+        self.assertEqual(app.clean_privacy_traces(), (0, []))
+
+    def test_selected_and_common_preserve_projects_and_other_chat(self):
+        output = self.file(self.storage.documents / "2026-11-24/task/outputs/report")
+        self.settings([("global", self.outputs, {T1: str(output.parent)}), ("global", self.selected, "project"),
+                       (self.owner, "thread-descriptions-v1", {T1: "first", T2: "other"}),
+                       (self.owner, "thread-client-id-v1:local%3A" + T1, "client"),
+                       (self.owner, "unified-sidebar-pinned-order-v1", ["codex:thread:local:" + T1, "codex:project:p"]),
+                       (self.owner, "new-task-project-by-computer", {"local": "p"})])
+        before = self.saved()
+        self.assertEqual(cc.cleanup_all(self.storage, logs_only=True), [])
+        self.assertEqual(self.saved(), before)
+        with patch.object(cc, "delete_target", side_effect=PermissionError("locked output")):
+            self.assertTrue(cc.delete_selected(self.storage, {T1}, []))
+        self.assertEqual(self.saved(), before)
+        self.assertEqual(cc.delete_selected(self.storage, {T1}, []), [])
+        self.assertFalse(output.exists())
+        self.assertEqual(self.saved(), {("global", self.outputs): {}, ("global", self.selected): "project",
+            (self.owner, "thread-descriptions-v1"): {T2: "other"},
+            (self.owner, "unified-sidebar-pinned-order-v1"): ["codex:project:p"],
+            (self.owner, "new-task-project-by-computer"): {"local": "p"}})
+
+    def test_full_deletes_embedded_git_and_preserves_database_registered_projects(self):
+        base = self.storage.documents / "2026-11-24"
+        git = self.file(base / "has-repo/src/.git/config", "KEEP")
+        project = self.file(base / "registered/source.txt", "KEEP")
+        removable = self.file(base / "ordinary/outputs/report")
+        self.settings([("global", self.outputs, {T1: str(base / "has-repo/outputs"),
+                                                 T2: str(project.parent), "third": str(removable.parent)})])
+        state = self.db("state_5.sqlite", "create table project_roots(path text)")
+        with closing(sqlite3.connect(state)) as con:
+            con.execute("insert into project_roots values(?)", (str(project.parent),))
+            con.commit()
+        self.assertEqual(app.clean_privacy_traces(), (1, []))
+        self.assertEqual(self.saved(), {})
+        self.assertEqual(self.rows(state, "project_roots"), [])
+        self.assertFalse(git.exists())
+        self.assertEqual(project.read_text(), "KEEP")
+        self.assertFalse(removable.exists())
+
+    def test_conflicting_stores_preserve_both_mappings_and_folders_for_retry(self):
+        docs = self.storage.documents / "2026-11-24"
+        a, b = [self.file(docs / task / "outputs/file") for task in ("first", "second")]
+        self.settings([("global", self.outputs, {T1: str(a.parent)})])
+        backup = self.file(self.home / ".codex-global-state.json.bak",
+                           json.dumps({self.outputs: {T1: str(b.parent)}}))
+        errors = cc.cleanup_all(self.storage)
+        self.assertTrue(any("Conflicting projectless" in e for e in errors), errors)
+        self.assertTrue(a.exists() and b.exists())
+        self.assertIn(T1, self.saved()["global", self.outputs])
+        self.assertIn(T1, json.loads(backup.read_text())[self.outputs])
+
+    def test_folder_and_outputs_in_different_stores_identify_same_chat(self):
+        output = self.file(self.storage.documents / "2026-11-24/日本語 チャット/outputs/report")
+        self.settings([("global", self.outputs, {T1: str(output.parent)})])
+        self.file(self.home / ".codex-global-state.json", json.dumps({self.outputs: {T1: str(output.parent.parent)}}))
+        self.assertEqual(app.clean_privacy_traces(), (1, []))
+        self.assertFalse(output.parent.parent.exists())
+
+    def test_future_version_or_changed_schema_is_preserved(self):
+        self.settings([("global", self.selected, "KEEP")])
+        for sql in ["pragma user_version=2", "pragma user_version=1; alter table settings add column new_data"]:
+            self.db(cc.GLOBAL_DB, sql)
+            errors = cc.cleanup_all(self.storage)
+            self.assertTrue(any("Unsupported global state schema" in e for e in errors), errors)
+            self.assertEqual(self.rows(self.db_path, "settings")[0][2], '"KEEP"')
+
+    def test_all_chats_use_full_cleanup_once(self):
+        gui = Mock()
+        gui.checked_records.return_value = [app.CleanRecord(app.PROVIDER_CODEX, T1, "task", "", 0)]
+        self.settings([("global", self.selected, "project")])
+        with patch.object(app.messagebox, "askyesno", return_value=True), patch.object(app.messagebox, "showinfo"), \
+             patch.object(app, "process_running", return_value=False), patch.object(app, "codex_desktop_process_ids", return_value=[]), \
+             patch.object(app, "delete_selected_records") as selected, patch.object(app, "clean_common_traces") as common:
+            app.App.delete_checked(gui)
+        selected.assert_not_called()
+        common.assert_not_called()
+        gui.show_cleanup_errors.assert_not_called()
+        self.assertEqual(self.saved(), {})
+
+    def test_active_turns_removed_by_selected_session_id(self):
+        catalog = self.db("sqlite/codex.db", f"""
+            create table active_chat_turns(profile TEXT NOT NULL, account_id TEXT NOT NULL, user_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL, launch_id TEXT NOT NULL, observed_at_ms INTEGER NOT NULL,
+                primary key(profile, account_id, user_id, thread_id)) WITHOUT ROWID;
+            insert into active_chat_turns values('profile','account','user','{T1}','launch',0);
+        """)
+        self.assertEqual(cc.delete_selected(self.storage, {T1}, []), [])
+        self.assertEqual(self.rows(catalog, "active_chat_turns"), [])
+        self.assertEqual(app.clean_privacy_traces(), (0, []))
+        self.assertEqual(self.rows(catalog, "active_chat_turns"), [])
+
+
+class AutomaticCleanupTests(CleanupFixture):
+    def test_chat_created_during_confirmation_keeps_its_files_and_project(self):
+        self.file(self.home / "sessions" / (T1 + ".jsonl"))
+        gui = Mock()
+        gui.checked_records.return_value = app.load_records()
+        new = self.home / "sessions" / (T2 + ".jsonl")
+        def confirm(*args):
+            self.file(new)
+            return True
+        with patch.object(app.messagebox, "askyesno", side_effect=confirm), patch.object(app.messagebox, "showinfo"), \
+             patch.object(app, "process_running", return_value=False), patch.object(app, "codex_desktop_process_ids", return_value=[]):
+            app.App.delete_checked(gui)
+        gui.show_cleanup_errors.assert_not_called()
+        self.assertTrue(new.exists())
+        self.assertFalse((new.parent / (T1 + ".jsonl")).exists())
+
+    def test_other_transcript_and_parent_repository_are_preserved(self):
+        other = self.file(self.home / "sessions" / (T2 + ".jsonl"), "KEEP")
+        self.assertTrue(cc.delete_selected(self.storage, {T1}, [str(other)]))
+        self.assertEqual(other.read_text(), "KEEP")
+        self.file(self.storage.documents / ".git/config")
+        inside = self.file(self.storage.documents / "2026-11-24/task/outputs/result", "KEEP")
+        self.file(self.home / ".codex-global-state.json", json.dumps({"thread-projectless-output-directories":{T1:str(inside.parent)}}))
+        self.assertEqual(cc.delete_selected(self.storage,{T1},[]),[])
+        self.assertEqual(inside.read_text(),"KEEP")
+
+    def test_partial_always_cleans_logs_and_only_unused_registrations(self):
+        a, b = [str(self.root / n) for n in ("remove", "keep")]
+        state = self.db("state_5.sqlite", """
+            create table projects(id text primary key);
+            create table project_roots(project_id text,path text);
+            create table threads(id text,project_id text,cwd text,title text);
+            insert into projects values('a'),('b'),('shared');
+        """)
+        with closing(sqlite3.connect(state)) as con:
+            con.executemany("insert into project_roots values(?,?)", [("a",a),("b",b)])
+            con.executemany("insert into threads values(?,?,?,?)", [(T1,"a",a,"same"),(T2,"b",b,"same")])
+            con.commit()
+        local = self.file(self.home / ".codex-global-state.json", json.dumps({
+            "local-projects": {"a":{"rootPaths":[a]},"b":{"rootPaths":[b]},"shared":{"rootPaths":[b]}},
+            "project-order":["a","b","shared"], "active-workspace-roots":[a,b],
+            "electron-owner-value:selected-project:owner":{"type":"local","projectId":"a"},
+            "electron-owner-atoms:owner":{"new-task-project-by-computer":{"local":"a","other":"b"}}}))
+        outside = self.file(Path(a) / "src.py", "KEEP")
+        log = self.file(self.home / "log/log.txt")
+        current = app.load_records()
+        selected = [r for r in current if r.record_id == T1]
+        self.assertEqual(app.cleanup_records(selected, current, full=True), [])
+        self.assertFalse(log.exists())
+        self.assertEqual(outside.read_text(), "KEEP")
+        self.assertCountEqual(self.rows(state, "projects"), [("b",),("shared",)])
+        self.assertEqual(self.rows(state, "project_roots"), [("b",b)])
+        result=json.loads(local.read_text())
+        self.assertEqual(result["project-order"], ["b","shared"])
+        self.assertEqual(result["active-workspace-roots"], [b])
+        self.assertNotIn("electron-owner-value:selected-project:owner", result)
+        self.assertEqual(result["electron-owner-atoms:owner"]["new-task-project-by-computer"], {"other":"b"})
+        self.assertEqual([r.record_id for r in app.load_records()], [T2])
+
+    def test_hidden_or_new_chat_without_known_location_keeps_projects(self):
+        state = self.db("state_5.sqlite", f"""
+            create table threads(id text,cwd text); insert into threads values('{T1}',''),('{T2}','');
+            create table projects(id text); insert into projects values('project');
+        """)
+        current = app.load_records()
+        self.assertEqual(app.cleanup_records([r for r in current if r.record_id==T1], current, full=True), [])
+        self.assertEqual(self.rows(state,"projects"), [("project",)])
+        self.assertEqual([r.record_id for r in app.load_records()], [T2])
+
+    def test_alias_files_lock_and_session_metadata(self):
+        alias = "client-new-thread:33333333-3333-4333-8333-333333333333"
+        state = self.file(self.home / ".codex-global-state.json",json.dumps({
+            "client-thread-bindings-v1":{alias:T1}, "recent-workspace-files-v3":{
+                "old":{"threadId":alias,"hostId":"local","path":"a"},
+                "keep":{"threadId":T2,"hostId":"local","path":"b"}},
+            "search-mcp-context:"+json.dumps(["local",T1]):{}, "thread-user-activity-times-v1": {
+                f'["local","{T1}"]':1,f'["local","{T2}"]':2},
+            "electron-owner-value:app-server-projects-migration-by-host:a":{
+                "local:home":{"pendingThreadAssignmentIds":[T1,T2],"version":2}}}))
+        locks = [self.file(self.home / "thread-writer-locks" / (sid+".lock")) for sid in (T1,T2)]
+        self.assertEqual(cc.delete_selected(self.storage,{T1},[]),[])
+        contents=state.read_text()
+        self.assertNotIn(T1,contents)
+        self.assertNotIn(alias,contents)
+        self.assertIn(T2,contents)
+        self.assertEqual([p.exists() for p in locks], [False,True])
+
+    def test_claude_selection_full_and_custom_home(self):
+        root=self.user / "Claude 設定"
+        cwd=str(self.root / "actual repo")
+        source=self.file(Path(cwd)/".git/config","KEEP")
+        with patch.dict(os.environ,{"CLAUDE_CONFIG_DIR":str(root)}):
+            store=root/"projects"/"my-project"
+            for sid in (T1,T2):
+                self.file(store/(sid+".jsonl"),json.dumps({"type":"custom-title","customTitle":"title "+sid[0],"cwd":cwd,"sessionId":sid}))
+                self.file(store/sid/"subagents/agent.jsonl")
+                self.file(root/"file-history"/sid/"snapshot")
+            self.file(root/"history.jsonl","".join(json.dumps({"sessionId":sid,"project":cwd,"display":"text"})+"\n" for sid in (T1,T2)))
+            cfg=self.file(root/".claude.json",json.dumps({"oauthAccount":"KEEP","projects":{cwd:{"lastSessionId":T1,"mcpServers":{"x":"KEEP"}}}}))
+            index=self.file(store/"sessions-index.json",json.dumps({"entries":[{"sessionId":sid} for sid in (T1,T2)]}))
+            log=self.file(root/"debug/old.log")
+            current=app.load_records()
+            self.assertCountEqual([r.title for r in current],["title 1","title 2"])
+            self.assertEqual(app.cleanup_records([r for r in current if r.record_id==T1],current,full=False),[])
+            self.assertFalse(log.exists())
+            self.assertFalse((store/T1).exists())
+            self.assertFalse((root/"file-history"/T1).exists())
+            self.assertTrue((store/T2/"subagents/agent.jsonl").exists())
+            self.assertEqual(json.loads(index.read_text())["entries"],[{"sessionId":T2}])
+            current=app.load_records()
+            self.assertEqual([r.record_id for r in current],[T2])
+            self.assertEqual(app.cleanup_records(current,current,full=True),[])
+            self.assertEqual(app.load_records(),[])
+            self.assertFalse(store.exists())
+            self.assertEqual(json.loads(cfg.read_text()),{"oauthAccount":"KEEP","projects":{cwd:{"mcpServers":{"x":"KEEP"}}}})
+            self.assertEqual(source.read_text(),"KEEP")
 
 
 class AttachmentCleanupTests(CleanupFixture):

@@ -2,28 +2,20 @@
 
 [日本語](README.md)
 
-A Windows 10/11 GUI for deleting local Codex chats, artifacts in dedicated storage, and logs. Japanese OS locales use Japanese; other locales use English.
+A Windows 10/11 GUI for deleting local Codex and Claude Code chats, artifacts in dedicated storage, and logs. Japanese OS locales use Japanese; other locales use English.
 
 ## Usage
 
 Download `AIArchiveCleaner.exe` from [Releases](https://github.com/Lasagnoa/ai-archive-cleaner/releases/latest).
-Select chats, optionally enable shared cleanup or full cleanup, and review the confirmation. Running Codex applications must be stopped before deletion. Full cleanup applies to Codex regardless of selection or search filters. No backup is created.
+Click a title or its checkbox, then choose Delete. Shared logs/caches and unused project registrations are included each time. Selecting every local chat, or confirming cleanup with an empty inventory, also removes supported residual history and saved project selections. Hidden chats and chats created during confirmation are retained. No backup is created.
 
 ## Cleanup scope
 
-- **Selected:** the local task, duplicate transcripts, index, identifiable goals/memories/summaries/metadata, task-named artifacts and shell snapshots. Shared history and artifacts that cannot be associated with a task are not individually deleted.
-- **Shared:** known Codex Desktop/CLI logs/caches. Does not erase internal browser cookies.
-- **Full:** supported current/legacy history databases, drafts, artifacts in dedicated storage, logs, Codex project lists, and known internal browser history and caches. Internal browser login data is preserved.
-
-Supports `.codex` and `.codex/sqlite`, versioned supported DB families, and `CODEX_HOME`. Custom `sqlite_home` / `CODEX_SQLITE_HOME` and `log_dir` locations outside these standard paths are preserved and reported as incomplete when present. Orphan catalog titles and unindexed JSONL files remain selectable.
-Full cleanup also removes locally cached titles/summaries for other hosts and ChatGPT; it never calls an API to delete remote or cloud conversations. Selected cleanup is scoped to local tasks.
-
-## Preserved
-
-Codex **application** authentication, MCP configuration/credentials, general settings, `auth.json`, `config.toml`, `AGENTS.md`, keybindings, plugins, skills, pets, sandbox configuration, browser integration settings, and automation definitions remain.
-Actual source repositories are preserved. In `Documents/Codex`, only projectless chat folders explicitly mapped to a chat ID and meeting safety checks are removed. Unidentified files remain. Claude data and external Chrome/Edge profiles remain.
-
-Internal browser cookies, Local Storage, and website login data are protected. History mixed into authentication stores may remain.
+- Codex transcripts, indexes, SQLite records, JSON state and known chat-owned artifacts are matched by ID. The cleaner supports legacy JSON, account-specific state and version 1 of the desktop global SQLite database.
+- Explicitly mapped chat folders in `Documents/Codex` include any Git repositories and uncommitted files inside them. Registered workspaces, directories shared with retained chats, and external working directories are protected.
+- Project registration cleanup checks retained chat IDs, project assignments and working directories. When a retained chat cannot be located, registrations are preserved.
+- Claude Code cleanup covers local transcripts, session-specific subagents and tool outputs, prompt history, file checkpoints, attachments and known desktop Code metadata. The default directory and `CLAUDE_CONFIG_DIR` are supported. Project memory, authentication, trust and MCP configuration are preserved. [Anthropic's storage reference](https://code.claude.com/docs/en/claude-directory)
+- General settings, plugins, skills, automations and browser login stores are preserved. Cloud conversations and external copies are outside the local cleanup.
 
 ## Errors and limits
 
@@ -35,16 +27,16 @@ This is not a disk sanitization tool. SQLite cleanup uses secure_delete, VACUUM,
 
 ## Development and build
 
-Python 3.11+, standard-library runtime only.
+Run these commands in the source directory (`Development` in the project layout). Use Python 3.13 for development and exe builds. Running from source requires Python 3.11 or later and uses only the standard library.
 
 ```powershell
-py -3 -m venv .venv
+py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe app.py
 .\.venv\Scripts\python.exe -m unittest -v test_cleanup
 .\build_exe.ps1 -InstallDependencies
 ```
 
-Use `.\build_exe.ps1` when dependencies are already installed. Tests run before packaging; a failure stops the build. Output: `dist/AIArchiveCleaner.exe`. Build dependencies are installed only in the project `.venv`.
+Use `.\build_exe.ps1` when dependencies are already installed. Tests run before packaging; a failure stops the build. Building from `Development` writes `Release/AIArchiveCleaner.exe` in the project root. A standalone checkout builds to `dist/AIArchiveCleaner.exe`. Build dependencies are installed in the `.venv` next to the source.
 Tests use isolated dummy data and never delete real chat history.
 
 ## License

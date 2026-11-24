@@ -12,6 +12,7 @@ import re
 import sqlite3
 import stat
 import tomllib
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import unquote
@@ -26,17 +27,27 @@ HISTORY_KEYS = {
     "composer-prompt-drafts-v1", "composer-prompt-drafts-v2", "client-thread-bindings-v1",
     "composer-retained-documents-v1", "realtime-voice-most-recent-thread",
     "sidebar-project-thread-orders", "update-resume-state-v1",
-    "chatgpt-sidebar-state-v1", "electron-browser-extension-recently-used",
+    "chatgpt-sidebar-state-v1", "chatgpt-sidebar-state-v2", "electron-browser-extension-recently-used",
+    "thread-project-membership-host-ids", "pinned-thread-ids", "draft-thread-identities-v1",
+    "thread-user-activity-times-v1", "recent-workspace-files-v3", "electron-remote-hosted-pip-task-visibility-state",
 }
 HISTORY_PREFIXES = (
-    "thread-client-id-v1:", "thread-reference-capability:",
+    "thread-client-id-v1:", "thread-reference-capability:", "search-mcp-context:",
     "codex-writing-block-deleted-thread-v1:", "thread-browser-tabs-v1:", "thread-tab-routes-v1:",
 )
 PROJECT_KEYS = {
     "local-projects", "project-order", "electron-saved-workspace-roots",
     "active-workspace-roots", "selected-project", "project-appearances",
     "app-server-project-id-by-legacy-project-id-by-host", "app-server-projects-migration-by-host",
+    "app-server-pending-project-deletions-by-host", "electron-workspace-root-labels",
+    "pinned-project-ids", "new-task-project-by-computer", "new-task-target-history",
 }
+SIDEBAR_ORDERS = {"unified-sidebar-project-order-v1", "unified-sidebar-pinned-order-v1"}
+SIDEBAR_GROUPS = {"sidebar-custom-sections-v3", "sidebar-customization-snapshots-v2"}
+PROJECT_EXECUTION_KEYS = {"new-task-execution-by-account-project", "new-task-remote-host-by-account-project"}
+GLOBAL_KEYS = HISTORY_KEYS | PROJECT_KEYS | PROJECT_EXECUTION_KEYS | SIDEBAR_ORDERS | SIDEBAR_GROUPS
+GLOBAL_PREFIXES = HISTORY_PREFIXES + ("sidebar-project-expanded-v1-",)
+GLOBAL_DB = ".codex-global-state.sqlite"
 CACHE_DIRS = (
     "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache",
     "Crashpad", "sentry", "Shared Dictionary", "logs",
@@ -266,6 +277,7 @@ RULES = {
         "local_thread_catalog_sync_state": (), "local_thread_catalog_scan_checkpoints": (),
         "local_thread_catalog_history_coverage": (),
         "inbox_items": ("thread_id",), "automation_runs": ("thread_id",),
+        "active_chat_turns": ("thread_id",),
     },
     "summaries": {"thread_turn_summaries": ("thread_id",)},
 }
@@ -278,6 +290,11 @@ SAFE_TABLES = {
 
 # Column name, declared type, NOT NULL, default and position in the primary key.
 HISTORY_TABLE_COLUMNS = {
+    ("catalog", "active_chat_turns"): {
+        ("profile", "TEXT", 1, None, 1), ("account_id", "TEXT", 1, None, 2),
+        ("user_id", "TEXT", 1, None, 3), ("thread_id", "TEXT", 1, None, 4),
+        ("launch_id", "TEXT", 1, None, 0), ("observed_at_ms", "INTEGER", 1, None, 0),
+    },
     ("state", "thread_attachments"): {
         ("id", "TEXT", 0, None, 1), ("thread_id", "TEXT", 1, None, 0),
         ("attachment_type", "TEXT", 1, None, 0), ("identity_key", "TEXT", 1, None, 0),
@@ -291,6 +308,8 @@ HISTORY_TABLE_COLUMNS = {
 
 
 def family(path: Path) -> str | None:
+    if path.name == GLOBAL_DB:
+        return "global"
     m = re.fullmatch(r"(state|thread_history|logs|goals|memories|queue)_\d+\.sqlite", path.name)
     if m:
         return m[1]
@@ -367,7 +386,7 @@ def predicates(kind, table, columns, ids):
     return " AND ".join(parts) or "1", params
 
 
-def database_rows(path: Path, ids=None, *, clean=False, logs_only=False):
+def database_rows(path: Path, ids=None, *, clean=False, logs_only=False, projects=None):
     kind = family(path)
     if logs_only and kind != "logs":
         return []
@@ -383,8 +402,23 @@ def database_rows(path: Path, ids=None, *, clean=False, logs_only=False):
             con.execute("begin immediate")
         else:
             con.execute("begin")
-        tables = schema(con)
+        tables = {}
+        if kind == "global":
+            pending = global_setting_rows(con, path, ids, clean, projects.clean if projects is not None else None)
+        else:
+            tables = schema(con)
         for table, columns in tables.items():
+            if projects is not None:
+                column = {"projects": "id", "project_roots": "project_id",
+                          "project_idempotency_keys": "project_id"}.get(table)
+                if column and column in columns:
+                    for pid in projects.ids:
+                        where = f"from {quote(table)} where {quote(column)}=?"
+                        if clean:
+                            con.execute("delete " + where, (pid,))
+                        elif con.execute("select 1 " + where + " limit 1", (pid,)).fetchone():
+                            pending.append(f"Remaining project: {path.name}/{table}")
+                continue
             if table in SAFE_TABLES:
                 continue
             if not supported_table_schema(con, kind, table, columns):
@@ -434,7 +468,8 @@ def contains_id(value, ids):
     if not isinstance(value, str):
         return False
     value = unquote(value)
-    return value in ids or bool(set(UUID.findall(value)) & ids)
+    return (value in ids or bool(set(UUID.findall(value)) & ids)
+            or any(alias in ids for alias in re.findall("client-new-thread:" + UUID.pattern, value)))
 
 
 def filter_ids(value, ids):
@@ -448,34 +483,156 @@ def filter_ids(value, ids):
     return value
 
 
+def setting_name(key):
+    if key.startswith("electron-owner-value:"):
+        name, _, owner = key.removeprefix("electron-owner-value:").partition(":")
+        if owner:
+            return name
+    return key
+
+
+def owner_atoms(key):
+    return key.startswith("electron-owner-atoms:") and key != "electron-owner-atoms:"
+
+
+def atom_container(key):
+    return key == "electron-persisted-atom-state" or owner_atoms(key)
+
+
+def cleaned_sidebar(name, value, ids, project_ids=None):
+    prefixes = (("codex:project:", "executor-folder:", "chatgpt:project:", "codex:thread:",
+                 "chatgpt:conversation:") if ids is None else ("codex:thread:",))
+
+    def keep(item):
+        if project_ids is not None:
+            return not (isinstance(item, str) and item.startswith("codex:project:")
+                        and item.removeprefix("codex:project:") in project_ids)
+        return not (isinstance(item, str) and item.startswith(prefixes)
+                    and (ids is None or item.startswith("codex:thread:local:"))
+                    and (ids is None or contains_id(item, ids)))
+
+    def items(values):
+        if not isinstance(values, list):
+            raise ValueError(f"Unsupported sidebar order: {name}")
+        return [v for v in values if keep(v)]
+
+    def fields(obj, order, flags):
+        result = dict(obj)
+        if order in obj:
+            result[order] = items(obj[order])
+        if isinstance(obj.get(flags), dict):
+            result[flags] = {k: v for k, v in obj[flags].items() if keep(k)}
+        return result
+
+    if name in SIDEBAR_ORDERS:
+        return items(value)
+    if not isinstance(value, dict) or not all(isinstance(v, dict) for v in value.values()):
+        raise ValueError(f"Unsupported sidebar groups: {name}")
+    if name == "sidebar-customization-snapshots-v2":
+        return {k: fields(v, "order", "pinOverrides") for k, v in value.items()}
+    result = dict(value)
+    for account, group in value.items():
+        if "sections" in group:
+            sections = group["sections"]
+            if not isinstance(sections, list) or not all(isinstance(s, dict) for s in sections):
+                raise ValueError(f"Unsupported sidebar sections: {name}")
+            result[account] = {**group, "sections": [fields(s, "itemKeys", "pendingDeletionHostIdsByItemKey")
+                                                      for s in sections]}
+    return result
+
+
 def cleaned_global(data, ids=None):
     if not isinstance(data, dict):
         raise ValueError("JSON root must be an object")
     data = dict(data)
     for key in list(data):
-        if key == "electron-persisted-atom-state":
+        name = setting_name(key)
+        if atom_container(key):
             data[key] = cleaned_global(data[key], ids)
-        elif key in HISTORY_KEYS or key.startswith(HISTORY_PREFIXES):
-            if ids is None or contains_id(key, ids):
+        elif ids is not None and name == "recent-workspace-files-v3" and isinstance(data[key], dict):
+            data[key] = {k: v for k, v in data[key].items() if not (isinstance(v, dict)
+                         and v.get("hostId") == "local" and contains_id(v.get("threadId"), ids))}
+        elif ids is not None and name == "app-server-projects-migration-by-host" and isinstance(data[key], dict):
+            data[key] = {k: {**v, "pendingThreadAssignmentIds": filter_ids(v["pendingThreadAssignmentIds"], ids)}
+                         if k.startswith("local:") and isinstance(v, dict) and "pendingThreadAssignmentIds" in v else v
+                         for k, v in data[key].items()}
+        elif ids is not None and name in ("prompt-history", "thread-user-activity-times-v1") and isinstance(data[key], dict):
+            data[key] = {k: v for k, v in data[key].items() if not contains_id(k, ids)
+                         or (name == "thread-user-activity-times-v1" and not k.startswith('["local",'))}
+        elif ids is not None and name.startswith("search-mcp-context:"):
+            parts = json.loads(name.removeprefix("search-mcp-context:"))
+            if isinstance(parts, list) and len(parts) == 2 and parts[0] == "local" and parts[1] in ids:
+                data.pop(key)
+        elif name in HISTORY_KEYS or name.startswith(HISTORY_PREFIXES):
+            if ids is None or contains_id(name, ids) or contains_id(data[key], ids):
                 data.pop(key)
             else:
                 data[key] = filter_ids(data[key], ids)
-        elif ids is None and (key in PROJECT_KEYS or key.startswith("sidebar-project-expanded-v1-")):
+        elif ids is None and (name in PROJECT_KEYS or name.startswith("sidebar-project-expanded-v1-")):
             data.pop(key)
+        elif ids is None and name in PROJECT_EXECUTION_KEYS:
+            # The [account, user, null] entry is the preference for projectless chats.
+            if not isinstance(data[key], dict):
+                raise ValueError(f"Unsupported project preference: {name}")
+            retained = dict(data[key])
+            for entry in data[key]:
+                try:
+                    parts = json.loads(entry)
+                except ValueError:
+                    continue
+                if isinstance(parts, list) and len(parts) == 3 and isinstance(parts[2], str):
+                    del retained[entry]
+            data[key] = retained
+        elif name in SIDEBAR_ORDERS or name in SIDEBAR_GROUPS:
+            data[key] = cleaned_sidebar(name, data[key], ids)
     return data
 
 
-def rewrite_json(path, root, transform):
-    path = checked(path, root)
-    before = json.loads(path.read_text(encoding="utf-8-sig"))
-    after = transform(before)
-    if before == after:
-        return
+def global_settings(con, path):
+    # Desktop schema v1 flattens atom containers into (scope, key) rows.
+    version = con.execute("pragma user_version").fetchone()[0]
+    columns = [tuple(row[1:]) for row in con.execute("pragma table_xinfo(settings)")]
+    expected = [(name, "TEXT", 1, None, pk, 0) for name, pk in (("scope", 1), ("key", 2), ("value", 0))]
+    objects = con.execute("select type,name from sqlite_schema where name not glob 'sqlite_*'").fetchall()
+    if (version != 1 or columns != expected or objects != [("table", "settings")]
+            or con.execute("pragma foreign_key_list(settings)").fetchone()):
+        raise ValueError(f"Unsupported global state schema (preserved): {path.name} (version {version})")
+    for scope, key, raw in con.execute("select scope,key,value from settings"):
+        if not isinstance(scope, str) or not isinstance(key, str) or not isinstance(raw, str):
+            raise ValueError(f"Unsupported global state row (preserved): {path.name}")
+        if scope in ("global", "atom") or owner_atoms(scope):
+            yield scope, key, raw
+
+
+def global_setting_rows(con, path, ids, clean, transform=None):
+    changes = []
+    for scope, key, raw in global_settings(con, path):
+        name = setting_name(key)
+        if not (atom_container(key) or name in GLOBAL_KEYS or name.startswith(GLOBAL_PREFIXES)):
+            continue
+        before = {key: json.loads(raw)}
+        after = transform(before) if transform is not None else cleaned_global(before, ids)
+        if before == after:
+            continue
+        if not clean:
+            return [f"Remaining metadata: {path.name}/settings"]
+        changes.append((scope, key, after))
+    for scope, key, after in changes:
+        if key in after:
+            value = json.dumps(after[key], ensure_ascii=False, separators=(",", ":"))
+            con.execute("update settings set value=? where scope=? and key=?", (value, scope, key))
+        else:
+            con.execute("delete from settings where scope=? and key=?", (scope, key))
+    return []
+
+
+@contextmanager
+def replacement_file(path, root):
     temp = checked(path.with_name(path.name + ".cleaner.tmp"), root)
-    # Do not overwrite an existing temporary file from a different operation.
-    with temp.open("x", encoding="utf-8") as f:
-        json.dump(after, f, ensure_ascii=False, separators=(",", ":"))
+    stream = temp.open("x", encoding="utf-8", newline="")
     try:
+        with stream:
+            yield stream
         reject_links(path)
         temp.replace(path)
     finally:
@@ -483,15 +640,64 @@ def rewrite_json(path, root, transform):
             remove_path(temp, root)
 
 
+def rewrite_json(path, root, transform):
+    path = checked(path, root)
+    before = json.loads(path.read_text(encoding="utf-8-sig"))
+    after = transform(before)
+    if before != after:
+        with replacement_file(path, root) as stream:
+            json.dump(after, stream, ensure_ascii=False, separators=(",", ":"))
+
+
 def global_files(storage):
     return [storage.home / n for n in (".codex-global-state.json", ".codex-global-state.json.bak")
             if (storage.home / n).exists()]
 
 
-def projectless_outputs(storage, ids):
+def stored_settings(storage):
+    def entries(data):
+        if not isinstance(data, dict):
+            raise ValueError("Global state must be an object")
+        for key, value in data.items():
+            if atom_container(key):
+                yield from entries(value)
+            else:
+                yield setting_name(key), value
+    for path in global_files(storage):
+        reject_links(path)
+        yield from entries(json.loads(path.read_text(encoding="utf-8-sig")))
+    for db in databases(storage):
+        if family(db) == "global":
+            con = connect(db)
+            try:
+                for _, key, raw in global_settings(con, db):
+                    if atom_container(key) or setting_name(key) in GLOBAL_KEYS or setting_name(key).startswith(GLOBAL_PREFIXES):
+                        yield from entries({key: json.loads(raw)})
+            finally:
+                con.close()
+
+
+def metadata_ids(storage, ids):
+    bindings = {}
+    for key, value in stored_settings(storage):
+        if key == "client-thread-bindings-v1" and isinstance(value, dict):
+            pairs = value.items()
+        elif unquote(key).startswith("thread-client-id-v1:local:"):
+            pairs = [(value, unquote(key).removeprefix("thread-client-id-v1:local:"))]
+        else:
+            continue
+        for client, server in pairs:
+            if isinstance(client, str) and client.startswith("client-new-thread:") and isinstance(server, str):
+                bindings.setdefault(client, set()).add(server)
+    return ids | {client for client, servers in bindings.items() if servers <= ids}
+
+
+def projectless_outputs(storage, ids, keep_paths=()):
     """Find explicitly mapped projectless outputs, rejecting ambiguous ownership."""
     mappings = {}
-    project_paths = []
+    project_paths = list(keep_paths)
+    hints = []
+    root = lexical(storage.documents)
     def collect_paths(value):
         if isinstance(value, str) and Path(value).is_absolute():
             project_paths.append(lexical(Path(value)))
@@ -502,37 +708,39 @@ def projectless_outputs(storage, ids):
         elif isinstance(value, list):
             for item in value:
                 collect_paths(item)
-    for path in global_files(storage):
-        reject_links(path)
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-        if not isinstance(data, dict):
-            raise ValueError(f"JSON root must be an object: {path}")
-        for obj in (data, data.get("electron-persisted-atom-state", {})):
-            if not isinstance(obj, dict):
-                continue
-            for key in PROJECT_KEYS:
-                if key in obj:
-                    collect_paths(obj[key])
-            value = obj.get("thread-projectless-output-directories", {})
+    for name, value in stored_settings(storage):
+        if name in PROJECT_KEYS:
+            collect_paths(value)
+        elif name == "thread-workspace-root-hints" and isinstance(value, dict):
+            hints.extend((tid, cwd) for tid, cwd in value.items() if isinstance(cwd, str) and Path(cwd).is_absolute())
+        elif name == "thread-projectless-output-directories":
             if not isinstance(value, dict):
-                raise ValueError(f"Unsupported projectless output mapping: {path}")
-            for tid, name in value.items():
-                if isinstance(name, str) and name:
-                    mappings.setdefault(tid, set()).add(lexical(Path(name)))
-    for db in databases(storage):
-        if family(db) != "state":
-            continue
+                raise ValueError("Unsupported projectless output mapping")
+            for tid, output in value.items():
+                if not isinstance(output, str) or not Path(output).is_absolute():
+                    raise ValueError("Unsupported projectless output path (preserved)")
+                folder = lexical(Path(output))
+                if folder.is_relative_to(root) and len(folder.relative_to(root).parts) == 3 and folder.name == "outputs":
+                    folder = folder.parent
+                mappings.setdefault(tid, set()).add(folder)
+
+    paths = databases(storage)
+    selected_ids = mappings if ids is None else ids
+    other_chat_paths = [lexical(Path(cwd)) for tid, cwd in hints if tid not in selected_ids]
+    for db in (p for p in paths if family(p) == "state"):
         con = connect(db)
         try:
-            cols = schema(con).get("threads", set())
+            tables = schema(con)
+            if "path" in tables.get("project_roots", set()):
+                for (path,) in con.execute("select path from project_roots"):
+                    collect_paths(path)
+            cols = tables.get("threads", set())
             if {"id", "cwd"} <= cols:
                 for tid, cwd in con.execute("select id,cwd from threads where cwd is not null"):
-                    selected_ids = mappings if ids is None else ids
                     if tid not in selected_ids and isinstance(cwd, str) and Path(cwd).is_absolute():
-                        project_paths.append(lexical(Path(cwd)))
+                        other_chat_paths.append(lexical(Path(cwd)))
         finally:
             con.close()
-    root = lexical(storage.documents)
     targets = []
     for tid in (mappings if ids is None else ids):
         values = mappings.get(tid, set())
@@ -542,29 +750,38 @@ def projectless_outputs(storage, ids):
             if not beneath(output, root) or output == root:
                 raise ValueError(f"Projectless output outside Documents/Codex (preserved): {output}")
             rel = output.relative_to(root)
-            if len(rel.parts) not in (2, 3) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", rel.parts[0]) or (len(rel.parts) == 3 and rel.parts[2] != "outputs"):
+            if len(rel.parts) != 2 or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", rel.parts[0]):
                 raise ValueError(f"Unsupported projectless output path (preserved): {output}")
             target = root / rel.parts[0] / rel.parts[1]
-            if any(other != tid and any(beneath(p, target) or beneath(target, p) for p in paths)
+            if any(other not in selected_ids and any(beneath(p, target) or beneath(target, p) for p in paths)
                    for other, paths in mappings.items()):
-                raise ValueError(f"Projectless output shared by another chat (preserved): {target}")
-            if any(beneath(p, target) or beneath(target, p) for p in project_paths):
-                raise ValueError(f"Project or another chat overlaps projectless output (preserved): {target}")
+                continue
             checked(target, root)
-            # A generated directory may later become an actual repository.
-            for ancestor in (root, target.parent, target):
-                if os.path.lexists(ancestor / ".git"):
-                    raise ValueError(f"Repository overlaps projectless output (preserved): {target}")
-            if target.exists():
-                for base, dirs, files in os.walk(target, followlinks=False, onerror=lambda e: (_ for _ in ()).throw(e)):
-                    if ".git" in dirs or ".git" in files:
-                        raise ValueError(f"Repository inside projectless output (preserved): {target}")
+            if any(beneath(p, target) or beneath(target, p) for p in other_chat_paths):
+                continue
+            # Git inside this chat belongs to its explicitly mapped output. A containing
+            # checkout or a separately registered/shared working directory stays protected.
+            project = any(beneath(p, target) or beneath(target, p) for p in project_paths)
+            if not project:
+                project = any(os.path.lexists(p / ".git") for p in target.parents)
+            if project:
+                continue
             targets.append((target, root))
     return list(dict.fromkeys(targets))
 
 
+def writer_locks(storage, ids=None):
+    root = storage.home / "thread-writer-locks"
+    reject_links(root)
+    if root.exists():
+        for path in root.iterdir():
+            if path.suffix == ".lock" and UUID.fullmatch(path.stem) and (ids is None or path.stem in ids):
+                yield path, storage.home
+
+
 def full_targets(storage):
     targets = [(storage.home / n, storage.home) for n in HISTORY_DIRS + HISTORY_FILES]
+    targets.extend(writer_locks(storage))
     if storage.home.exists():
         targets += [(p, storage.home) for pattern in ("..codex-global-state.json*tmp-*", ".codex-global-state.json*.tmp", ".codex-global-state.json*.cleaner.tmp")
                     for p in storage.home.glob(pattern)]
@@ -634,12 +851,13 @@ def preserved_configured_paths(storage, *, logs_only=False):
     return warnings
 
 
-def inspect_remaining(storage, ids=None, *, logs_only=False):
+def inspect_remaining(storage, ids=None, *, logs_only=False, metadata_refs=None):
     result = Result()
     result.errors.extend(preserved_configured_paths(storage, logs_only=logs_only))
     paths = result.step("Database discovery", lambda: databases(storage)) or []
+    refs = ids if metadata_refs is None else metadata_refs
     for path in paths:
-        pending = result.step(str(path), lambda p=path: database_rows(p, ids, logs_only=logs_only))
+        pending = result.step(str(path), lambda p=path: database_rows(p, refs if family(p) == "global" else ids, logs_only=logs_only))
         result.errors.extend(pending or [])
     if ids is None:
         for path, _ in (common_file_targets(storage) if logs_only else full_targets(storage)):
@@ -647,11 +865,13 @@ def inspect_remaining(storage, ids=None, *, logs_only=False):
             if remaining:
                 result.errors.append(f"Remaining files: {path}")
     if not logs_only:
+        if ids is not None:
+            result.errors.extend(f"Remaining writer lock: {p}" for p, _ in writer_locks(storage, ids))
         for path in global_files(storage):
             def inspect(p=path):
                 reject_links(p)
                 data = json.loads(p.read_text(encoding="utf-8-sig"))
-                return data != cleaned_global(data, ids)
+                return data != cleaned_global(data, refs)
             if result.step(str(path), inspect):
                 result.errors.append(f"Remaining metadata: {path}")
         # These may contain user-managed configuration: detect, never guess-delete.
@@ -663,12 +883,12 @@ def inspect_remaining(storage, ids=None, *, logs_only=False):
     return result.errors
 
 
-def cleanup_all(storage, *, logs_only=False):
+def cleanup_all(storage, *, logs_only=False, keep_paths=()):
     result = Result()
     result.errors.extend(preserved_configured_paths(storage, logs_only=logs_only))
     outputs_ok = True
     if not logs_only:
-        outputs = result.step("Projectless output discovery", lambda: projectless_outputs(storage, None))
+        outputs = result.step("Projectless output discovery", lambda: projectless_outputs(storage, None, keep_paths))
         outputs_ok = outputs is not None
         for target, root in outputs or []:
             before = len(result.errors)
@@ -678,6 +898,9 @@ def cleanup_all(storage, *, logs_only=False):
             outputs_ok = outputs_ok and len(result.errors) == before
     paths = result.step("Database discovery", lambda: databases(storage)) or []
     for path in paths:
+        # Retain mappings and registered roots for a safe retry after an output failure.
+        if not outputs_ok and family(path) in ("global", "state"):
+            continue
         pending = result.step(str(path), lambda p=path: database_rows(p, clean=True, logs_only=logs_only))
         result.errors.extend(pending or [])
     targets = result.step("File discovery", lambda: common_file_targets(storage) if logs_only else full_targets(storage)) or []
@@ -751,13 +974,26 @@ def list_threads(storage):
             if p.suffix == ".jsonl" and lexical(p) not in indexed_paths:
                 match = UUID.search(p.name)
                 tid = match[0] if match else str(p.relative_to(root))
+                cwd = ""
+                with p.open(encoding="utf-8-sig", errors="replace") as stream:
+                    try:
+                        header = json.loads(stream.readline(1024 * 1024))
+                    except ValueError:
+                        header = None
+                if isinstance(header, dict) and header.get("type") == "session_meta":
+                    payload = header.get("payload")
+                    if isinstance(payload, dict):
+                        if not match and isinstance(payload.get("id"), str) and UUID.fullmatch(payload["id"]):
+                            tid = payload["id"]
+                        if isinstance(payload.get("cwd"), str):
+                            cwd = payload["cwd"]
                 orphan = records.pop((tid, ""), None)
                 records[(tid, str(p))] = (tid, orphan[1] if orphan else p.stem, str(p),
-                                        root.name == "archived_sessions", p.stat().st_mtime, orphan[5] if orphan else "")
+                                        root.name == "archived_sessions", p.stat().st_mtime, cwd or (orphan[5] if orphan else ""))
     return list(records.values())
 
 
-def delete_selected(storage, ids: set[str], rollout_paths: list[str]):
+def delete_selected(storage, ids: set[str], rollout_paths: list[str], *, keep_paths=()):
     if not ids:
         return []
     result = Result()
@@ -771,12 +1007,15 @@ def delete_selected(storage, ids: set[str], rollout_paths: list[str]):
                      if beneath(p, lexical(r)) and p != lexical(r)), None)
         if root is None:
             result.errors.append(f"Outside transcript boundary: {p}")
+        elif p.suffix != ".jsonl" or (UUID.search(p.name) and not contains_id(p.name, ids)):
+            result.errors.append(f"Transcript ownership mismatch (preserved): {p}")
         else:
             result.step(str(p), lambda p=p, root=root: checked(p, root))
             paths.append((p, root))
     if result.errors:
         return result.errors
-    owned_outputs = result.step("Projectless output discovery", lambda: projectless_outputs(storage, ids)) or []
+    owned_outputs = result.step("Projectless output discovery", lambda: projectless_outputs(storage, ids, keep_paths)) or []
+    refs = result.step("Client thread bindings", lambda: metadata_ids(storage, ids))
     if result.errors:
         return result.errors
     # A thread may have multiple transcript copies across the two directories.
@@ -789,7 +1028,10 @@ def delete_selected(storage, ids: set[str], rollout_paths: list[str]):
         result.step(str(root), find_transcripts)
     if result.errors:
         return result.errors
-    for path in databases(storage):
+    db_paths = databases(storage)
+    for path in db_paths:
+        if family(path) == "global":
+            continue
         pending = result.step(str(path), lambda p=path: database_rows(p, ids, clean=True))
         result.errors.extend(pending or [])
     # Keep transcript files available for retry if database cleanup failed.
@@ -805,8 +1047,14 @@ def delete_selected(storage, ids: set[str], rollout_paths: list[str]):
         path = storage.home / name
         if path.exists():
             result.step(str(path), lambda p=path, f=field: filter_jsonl(p, storage.home, f, ids))
+    for path, root in writer_locks(storage, ids):
+        result.step(str(path), lambda p=path, r=root: delete_target(p, r, storage))
     for path in global_files(storage):
-        result.step(str(path), lambda p=path: rewrite_json(p, storage.home, lambda d: cleaned_global(d, ids)))
+        result.step(str(path), lambda p=path: rewrite_json(p, storage.home, lambda d: cleaned_global(d, refs)))
+    for path in db_paths:
+        if family(path) == "global":
+            pending = result.step(str(path), lambda p=path: database_rows(p, refs, clean=True))
+            result.errors.extend(pending or [])
     # Only explicit task-named directories/files: never infer ownership from cwd.
     for name in OWNED_DIRS:
         root = storage.home / name
@@ -838,29 +1086,19 @@ def delete_selected(storage, ids: set[str], rollout_paths: list[str]):
     for path, _ in paths:
         if path.exists():
             result.errors.append(f"Remaining transcript: {path}")
-    pending = result.step("Verification", lambda: inspect_remaining(storage, ids))
+    pending = result.step("Verification", lambda: inspect_remaining(storage, ids, metadata_refs=refs))
     result.errors.extend(pending or [])
     return list(dict.fromkeys(result.errors))
 
 
 def filter_jsonl(path, root, field, ids):
     path = checked(path, root)
-    lines = []
-    for line in path.read_text(encoding="utf-8-sig").splitlines(keepends=True):
-        if not line.strip():
-            lines.append(line)
-            continue
-        item = json.loads(line)
-        if not isinstance(item, dict):
-            raise ValueError(f"Invalid JSONL object: {path}")
-        if item.get(field) not in ids:
-            lines.append(line)
-    temp = checked(path.with_name(path.name + ".cleaner.tmp"), root)
-    with temp.open("x", encoding="utf-8") as f:
-        f.write("".join(lines))
-    try:
-        reject_links(path)
-        temp.replace(path)
-    finally:
-        if temp.exists():
-            remove_path(temp, root)
+    with replacement_file(path, root) as dest, path.open(encoding="utf-8-sig", newline="") as source:
+        for line in source:
+            if line.strip():
+                item = json.loads(line)
+                if not isinstance(item, dict):
+                    raise ValueError(f"Invalid JSONL object: {path}")
+                if item.get(field) in ids:
+                    continue
+            dest.write(line)
